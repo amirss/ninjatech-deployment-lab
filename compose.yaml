@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ninjatech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-ninjatech}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+    environment:
+      NINJATECH_APP_NAME: ${NINJATECH_APP_NAME:-NinjaTech Deployment Lab}
+      NINJATECH_ENVIRONMENT: ${NINJATECH_ENVIRONMENT:-development}
+      NINJATECH_LOG_LEVEL: ${NINJATECH_LOG_LEVEL:-INFO}
+      NINJATECH_DB_READY_TIMEOUT_SECONDS: ${NINJATECH_DB_READY_TIMEOUT_SECONDS:-2.0}
+      NINJATECH_DATABASE_URL: ${NINJATECH_DATABASE_URL:?Set NINJATECH_DATABASE_URL in .env}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      - db
+
+volumes:
+  postgres-data:
+

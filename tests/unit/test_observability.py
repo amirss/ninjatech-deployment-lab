@@ -1,0 +1,36 @@
+from __future__ import annotations
+
+import json
+import logging
+
+from ninjatech_deployment_lab.observability import JsonFormatter, normalize_request_id
+
+
+def test_normalize_request_id_preserves_safe_value() -> None:
+    assert normalize_request_id("ticket:ABC-123") == "ticket:ABC-123"
+
+
+def test_normalize_request_id_replaces_unsafe_value() -> None:
+    request_id = normalize_request_id("unsafe\nvalue")
+
+    assert len(request_id) == 32
+    assert request_id.isalnum()
+
+
+def test_json_formatter_emits_machine_readable_fields() -> None:
+    record = logging.LogRecord(
+        name="test.logger",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="test_message",
+        args=(),
+        exc_info=None,
+    )
+    formatter = JsonFormatter(service_name="test-service")
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["level"] == "INFO"
+    assert payload["message"] == "test_message"
+    assert payload["service"] == "test-service"

@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from ninjatech_deployment_lab.config import Settings
+
+
+def test_settings_load_from_prefixed_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "NINJATECH_DATABASE_URL",
+        "postgresql+asyncpg://user:password@localhost:5432/example",
+    )
+    monkeypatch.setenv("NINJATECH_ENVIRONMENT", "staging")
+    monkeypatch.setenv("NINJATECH_DB_READY_TIMEOUT_SECONDS", "4.5")
+
+    settings = Settings()
+
+    assert settings.environment == "staging"
+    assert settings.db_ready_timeout_seconds == 4.5
+
+
+def test_settings_reject_non_async_postgresql_url() -> None:
+    with pytest.raises(ValidationError, match=r"postgresql\+asyncpg"):
+        Settings(database_url="sqlite+aiosqlite:///local.db")
