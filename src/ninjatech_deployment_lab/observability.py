@@ -7,9 +7,12 @@ import re
 from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from time import perf_counter
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
+from fastapi import Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -33,9 +36,15 @@ class JsonFormatter(logging.Formatter):
     extra_fields = (
         "duration_ms",
         "environment",
+        "event",
         "http_method",
         "http_path",
+        "idempotency_key_hash",
+        "new_status",
+        "previous_status",
         "status_code",
+        "task_id",
+        "task_type",
     )
 
     def __init__(self, service_name: str) -> None:
@@ -100,6 +109,26 @@ def configure_logging(level: str, service_name: str) -> None:
                 },
             },
         }
+    )
+
+
+async def sanitized_validation_error_handler(
+    _: Request,
+    error: Exception,
+) -> JSONResponse:
+    """Return validation details without echoing submitted values or non-finite input."""
+    validation_error = cast(RequestValidationError, error)
+    detail = [
+        {
+            "type": item["type"],
+            "loc": list(item["loc"]),
+            "msg": item["msg"],
+        }
+        for item in validation_error.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": detail},
     )
 
 

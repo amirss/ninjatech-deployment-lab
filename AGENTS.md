@@ -3,8 +3,8 @@
 ## Project scope
 
 This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
-Agent. Milestone 1 is deliberately limited to the FastAPI service, configuration,
-observability, PostgreSQL connectivity, migrations, tests, and delivery tooling.
+Agent. Milestone 2 adds only a persistent and idempotent task state machine to the FastAPI,
+PostgreSQL, migration, observability, test, and delivery foundation.
 
 Do not add LLMs, agent frameworks, Redis, Celery, Jira, GitHub, Slack, AWS, or
 ticket-processing behavior unless a later milestone explicitly authorizes them.
@@ -20,7 +20,27 @@ ticket-processing behavior unless a later milestone explicitly authorizes them.
 - Run schema migrations explicitly; do not run them during application startup.
 - Keep the container runtime non-root.
 - Keep the container smoke test self-cleaning and free of credential output.
+- Keep task transition rules centralized in the task domain module.
+- Use database uniqueness for create idempotency and row locks for state transitions.
+- Never log complete task input, raw idempotency keys, or SQL bound parameters.
 - Prefer the smallest production-credible implementation and avoid speculative abstractions.
+
+## Deferred design
+
+Global idempotency-key uniqueness is temporary because this milestone has no authenticated
+tenant. When tenancy is introduced, idempotency uniqueness must become tenant-scoped.
+
+## Task lifecycle
+
+- `pending_approval -> approved`
+- `approved -> running`
+- `running -> succeeded`
+- `running -> failed`
+- `pending_approval -> cancelled`
+- `approved -> cancelled`
+- `succeeded`, `failed`, and `cancelled` are terminal.
+- Public API commands are limited to create, retrieve, approve, and cancel.
+- Concurrent commands for one task must lock and serialize that task row.
 
 ## Commands
 

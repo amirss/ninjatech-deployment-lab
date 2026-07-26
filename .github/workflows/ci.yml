@@ -60,8 +60,11 @@ jobs:
       - name: Type-check
         run: uv run mypy src tests
 
-      - name: Apply migrations
-        run: uv run alembic upgrade head
+      - name: Verify migration round trip
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
 
       - name: Test
         run: uv run pytest
