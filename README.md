@@ -1,12 +1,11 @@
 # NinjaTech Deployment Lab
 
 NinjaTech Deployment Lab is an incremental, production-oriented deployment engineering
-project. Milestone 1 provides only the reliable application foundation: a typed FastAPI
-service, environment configuration, JSON logging, PostgreSQL readiness, Alembic migrations,
-tests, containers, and CI.
+project. Milestone 2 adds a persistent, idempotent task state machine to the Milestone 1
+FastAPI, PostgreSQL, migration, observability, container, and CI foundation.
 
-No ticket automation, LLM, agent framework, queue, or third-party service integration is
-included in this milestone.
+No task execution, LLM, agent framework, queue, authentication, frontend, or third-party
+service integration is included in this milestone.
 
 ## Architecture
 
@@ -22,6 +21,10 @@ The application is one stateless ASGI service:
   false during a database outage.
 - Alembic migrations are a separate deployment action, avoiding migration races between
   application replicas.
+- Task creation uses a PostgreSQL unique constraint and atomic conflict insert for
+  idempotency.
+- Task transitions lock one row with `SELECT ... FOR UPDATE` before applying the centralized
+  state-machine rules.
 
 ## Prerequisites
 
@@ -95,6 +98,68 @@ Returns `503` when PostgreSQL is unavailable or the check times out:
 Both endpoints return an `X-Request-ID` response header. A caller may provide a safe request
 ID using the same header; otherwise the service generates one.
 
+### `POST /tasks`
+
+Creates a pending task. `Idempotency-Key` is required and must contain 1–255 visible ASCII
+characters:
+
+```bash
+curl --request POST http://127.0.0.1:8000/tasks \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: 6eef33e2-6fe4-4d77-ada7-e28326c4e598' \
+  --data '{
+    "task_type": "code_change",
+    "input": {
+      "repository": "example/repository",
+      "issue_number": 123
+    }
+  }'
+```
+
+A new request returns `201`. Repeating the same key and canonical request returns the
+original task with `200` and does not change `updated_at`. Reusing the key for different
+request content returns `409`.
+
+The request fingerprint is SHA-256 over validated canonical JSON. Object-key ordering,
+including nested ordering, does not matter; array ordering and changed values do matter.
+Database uniqueness—not an in-memory check—ensures simultaneous duplicates create one row.
+
+### `GET /tasks/{task_id}`
+
+Returns the current task or `404` when the UUID is not present.
+
+### `POST /tasks/{task_id}/approve`
+
+Changes `pending_approval` to `approved`. Repeating approval is idempotent and preserves
+`updated_at`. Approval from any other state returns `409`.
+
+### `POST /tasks/{task_id}/cancel`
+
+Changes `pending_approval` or `approved` to `cancelled`. Repeating cancellation is idempotent
+and preserves `updated_at`. Cancellation from `running`, `succeeded`, or `failed` returns
+`409`.
+
+Task responses expose the task ID, type, input, status, and timestamps. They never expose the
+idempotency key or internal fingerprint.
+
+## Task lifecycle
+
+```text
+pending_approval -> approved -> running -> succeeded
+        |              |          |
+        |              |          -> failed
+        |              |
+        +--------------+-----------> cancelled
+```
+
+Only create, retrieve, approve, and cancel are public in this milestone. Starting, succeeding,
+and failing are defined and unit tested as internal state-machine commands.
+
+Concurrent transitions on the same task serialize through a PostgreSQL row lock. For a
+pending task, concurrent approve and cancel either produce approve followed by cancel, or
+cancel followed by a rejected approve. The committed final state is valid and no update is
+lost.
+
 ## Configuration
 
 All application variables use the `NINJATECH_` prefix:
@@ -113,8 +178,10 @@ the environment or an ignored `.env` file.
 ## Logging
 
 Application and request logs are emitted as one JSON object per line to stdout. Request logs
-include the request ID, method, path, status code, and duration. Query strings and request
-bodies are intentionally excluded to reduce accidental sensitive-data logging.
+include the request ID, method, path, status code, and duration. Task lifecycle logs include
+the task ID, type, previous status, and new status. Query strings, request bodies, complete
+task input, raw idempotency keys, authorization headers, and SQL bound parameters are
+excluded.
 
 ## Quality commands
 
@@ -127,16 +194,17 @@ make test          # Run unit and integration-style tests
 make check         # Run all non-mutating checks
 ```
 
-The real PostgreSQL readiness test skips when `NINJATECH_TEST_DATABASE_URL` is absent.
-GitHub Actions provides PostgreSQL and always executes that test.
+The real PostgreSQL readiness, persistence, constraint, and concurrency tests skip when
+`NINJATECH_TEST_DATABASE_URL` is absent. GitHub Actions provides PostgreSQL and always
+executes them.
 
 ## Continuous integration
 
 GitHub Actions has two independent jobs:
 
-- The quality job checks Ruff formatting and linting, runs strict mypy, upgrades a fresh
-  PostgreSQL database to the Alembic head, and runs all pytest tests including the live
-  PostgreSQL readiness test.
+- The quality job checks Ruff formatting and linting, runs strict mypy, verifies an Alembic
+  upgrade/downgrade/re-upgrade cycle, and runs all pytest tests including live PostgreSQL
+  readiness, task persistence, idempotency, constraint, and concurrency coverage.
 - The container smoke job validates the Compose configuration, builds the application image,
   confirms its runtime user is non-root, waits for PostgreSQL, explicitly applies migrations,
   starts the API, and checks `/health` and `/ready`.
@@ -170,5 +238,6 @@ Review generated migrations before applying them:
 make migrate
 ```
 
-Milestone 1 contains a no-op baseline revision. It proves migration wiring and creates
-Alembic's version record without inventing domain tables.
+`0001_baseline` is the no-op foundation revision. `0002_create_tasks` creates the JSONB task
+table, global idempotency-key uniqueness, and database status integrity checks without
+inserting data.
