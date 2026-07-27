@@ -31,6 +31,13 @@ PUBLIC_TASK_FIELDS = {
     "task_type",
     "input",
     "status",
+    "attempt_count",
+    "max_attempts",
+    "available_at",
+    "cancellation_requested_at",
+    "result",
+    "last_error_code",
+    "last_error_summary",
     "created_at",
     "updated_at",
 }

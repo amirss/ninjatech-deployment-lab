@@ -27,16 +27,16 @@ IdempotencyKey = Annotated[
 ]
 
 
-def _reject_non_finite_numbers(value: JsonValue) -> None:
+def reject_non_finite_numbers(value: JsonValue) -> None:
     if isinstance(value, float) and not math.isfinite(value):
         msg = "input must not contain NaN or Infinity"
         raise ValueError(msg)
     if isinstance(value, list):
         for item in value:
-            _reject_non_finite_numbers(item)
+            reject_non_finite_numbers(item)
     if isinstance(value, dict):
         for item in value.values():
-            _reject_non_finite_numbers(item)
+            reject_non_finite_numbers(item)
 
 
 class TaskCreateRequest(BaseModel):
@@ -51,7 +51,7 @@ class TaskCreateRequest(BaseModel):
     @classmethod
     def reject_non_finite_numbers(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Reject non-standard JSON numbers at any nesting depth."""
-        _reject_non_finite_numbers(value)
+        reject_non_finite_numbers(value)
         return value
 
 
@@ -64,6 +64,13 @@ class TaskResponse(BaseModel):
     task_type: str
     input: dict[str, JsonValue] = Field(validation_alias="task_input")
     status: TaskStatus
+    attempt_count: int
+    max_attempts: int
+    available_at: datetime | None
+    cancellation_requested_at: datetime | None
+    result: dict[str, JsonValue] | None
+    last_error_code: str | None
+    last_error_summary: str | None
     created_at: datetime
     updated_at: datetime
 

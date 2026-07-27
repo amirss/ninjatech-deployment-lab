@@ -23,3 +23,26 @@ def test_settings_load_from_prefixed_environment(monkeypatch: pytest.MonkeyPatch
 def test_settings_reject_non_async_postgresql_url() -> None:
     with pytest.raises(ValidationError, match=r"postgresql\+asyncpg"):
         Settings(database_url="sqlite+aiosqlite:///local.db")
+
+
+def test_settings_reject_heartbeat_too_close_to_lease() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            database_url="postgresql+asyncpg://localhost/test",
+            worker_lease_duration_seconds=30,
+            worker_heartbeat_interval_seconds=11,
+        )
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_diagnostic_handler_cannot_be_enabled_outside_dev_or_test(
+    environment: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate(
+            {
+                "database_url": "postgresql+asyncpg://localhost/test",
+                "environment": environment,
+                "enable_diagnostic_handler": True,
+            }
+        )

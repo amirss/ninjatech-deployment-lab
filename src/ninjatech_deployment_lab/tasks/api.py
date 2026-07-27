@@ -106,11 +106,15 @@ def register_task_exception_handlers(application: FastAPI) -> None:
 async def create_task(
     payload: TaskCreateRequest,
     response: Response,
+    request: Request,
     session: TaskSession,
     idempotency_key: IdempotencyHeader,
 ) -> TaskResponse:
     """Create one task or replay the row bound to an identical request."""
-    result = await TaskService(session).create_task(
+    result = await TaskService(
+        session,
+        default_max_attempts=request.app.state.settings.worker_default_max_attempts,
+    ).create_task(
         idempotency_key=idempotency_key,
         task_type=payload.task_type,
         task_input=payload.input,
@@ -148,11 +152,21 @@ async def approve_task(task_id: UUID, session: TaskSession) -> TaskResponse:
     "/{task_id}/cancel",
     response_model=TaskResponse,
     responses={
+        status.HTTP_202_ACCEPTED: {
+            "model": TaskResponse,
+            "description": "Cancellation requested for a running task",
+        },
         status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
         status.HTTP_409_CONFLICT: {"model": ErrorResponse},
     },
 )
-async def cancel_task(task_id: UUID, session: TaskSession) -> TaskResponse:
+async def cancel_task(
+    task_id: UUID,
+    response: Response,
+    session: TaskSession,
+) -> TaskResponse:
     """Cancel an eligible task with idempotent repeated cancellation."""
     task = await TaskService(session).cancel_task(task_id)
+    if task.status.value == "running":
+        response.status_code = status.HTTP_202_ACCEPTED
     return TaskResponse.model_validate(task)

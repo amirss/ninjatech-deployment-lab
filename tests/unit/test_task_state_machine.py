@@ -7,6 +7,7 @@ from ninjatech_deployment_lab.tasks.domain import (
     TaskCommand,
     TaskStatus,
     apply_task_command,
+    decide_cancellation,
 )
 
 EXPECTED_TRANSITIONS: dict[
@@ -19,10 +20,16 @@ EXPECTED_TRANSITIONS.update(
         (TaskStatus.APPROVED, TaskCommand.APPROVE): TaskStatus.APPROVED,
         (TaskStatus.PENDING_APPROVAL, TaskCommand.CANCEL): TaskStatus.CANCELLED,
         (TaskStatus.APPROVED, TaskCommand.CANCEL): TaskStatus.CANCELLED,
+        (TaskStatus.RUNNING, TaskCommand.CANCEL): TaskStatus.RUNNING,
         (TaskStatus.CANCELLED, TaskCommand.CANCEL): TaskStatus.CANCELLED,
         (TaskStatus.APPROVED, TaskCommand.START): TaskStatus.RUNNING,
         (TaskStatus.RUNNING, TaskCommand.SUCCEED): TaskStatus.SUCCEEDED,
         (TaskStatus.RUNNING, TaskCommand.FAIL): TaskStatus.FAILED,
+        (TaskStatus.RUNNING, TaskCommand.RETRY): TaskStatus.APPROVED,
+        (
+            TaskStatus.RUNNING,
+            TaskCommand.FINALIZE_CANCELLATION,
+        ): TaskStatus.CANCELLED,
     }
 )
 
@@ -54,3 +61,23 @@ def test_repeated_approve_is_idempotent() -> None:
 
 def test_repeated_cancel_is_idempotent() -> None:
     assert apply_task_command(TaskStatus.CANCELLED, TaskCommand.CANCEL) == TaskStatus.CANCELLED
+
+
+def test_running_cancel_requests_cooperative_cancellation() -> None:
+    decision = decide_cancellation(
+        TaskStatus.RUNNING,
+        already_requested=False,
+    )
+
+    assert decision.new_status == TaskStatus.RUNNING
+    assert decision.request_cancellation is True
+
+
+def test_repeated_running_cancel_is_metadata_no_op() -> None:
+    decision = decide_cancellation(
+        TaskStatus.RUNNING,
+        already_requested=True,
+    )
+
+    assert decision.new_status == TaskStatus.RUNNING
+    assert decision.request_cancellation is False

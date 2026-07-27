@@ -25,6 +25,7 @@ class TaskRepository:
         task_type: str,
         task_input: dict[str, JsonValue],
         timestamp: datetime,
+        max_attempts: int,
     ) -> Task | None:
         """Atomically insert a task or return none when its idempotency key exists."""
         statement = (
@@ -36,6 +37,8 @@ class TaskRepository:
                 task_type=task_type,
                 task_input=task_input,
                 status=TaskStatus.PENDING_APPROVAL,
+                attempt_count=0,
+                max_attempts=max_attempts,
                 created_at=timestamp,
                 updated_at=timestamp,
             )
