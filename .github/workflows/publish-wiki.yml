@@ -1,0 +1,41 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/wiki/**"
+      - "scripts/publish-wiki.sh"
+      - ".github/workflows/publish-wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Validate publish script
+        run: bash -n scripts/publish-wiki.sh
+
+      - name: Publish managed pages to GitHub Wiki
+        env:
+          WIKI_REMOTE_URL: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.wiki.git
+          WIKI_BRANCH: master
+        run: bash scripts/publish-wiki.sh

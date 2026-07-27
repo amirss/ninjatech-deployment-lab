@@ -44,7 +44,7 @@ trap cleanup EXIT
 
 WIKI_DIR="${TMP_DIR}/wiki"
 
-echo "Cloning ${WIKI_REMOTE_URL}..."
+echo "Cloning the GitHub Wiki repository..."
 git clone --branch "${WIKI_BRANCH}" --single-branch "${WIKI_REMOTE_URL}" "${WIKI_DIR}"
 
 for page in "${MANAGED_PAGES[@]}"; do
