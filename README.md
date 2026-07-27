@@ -1,12 +1,12 @@
 # NinjaTech Deployment Lab
 
 NinjaTech Deployment Lab is an incremental, production-oriented deployment engineering
-project. Milestone 3 adds reliable worker execution to the persistent, idempotent task
-state machine and Milestone 1 application foundation.
+project. Milestone 4A adds one disabled-by-default, deterministic
+`deployment_context_sync` workflow to the persistent task and reliable-worker foundation.
 
-PostgreSQL is the only queue and coordination system. No LLM, agent framework, external
-integration, authentication, frontend, Redis, Celery, Kafka, SQS, Kubernetes, Terraform,
-or AWS infrastructure is included.
+PostgreSQL remains the only queue and coordination system. There is no LLM, agent
+framework, authentication, frontend, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or
+AWS infrastructure.
 
 ## Architecture
 
@@ -30,6 +30,9 @@ The application is one stateless ASGI service:
   commits a durable execution attempt, then runs the handler without holding a transaction.
 - Short heartbeat and finalization transactions require the current worker, attempt number,
   and lease-token hash. Expired attempts are preserved and reconciled before retry.
+- The deployment-context handler checks the internal service catalog before retrieving Jira
+  or GitHub data, stores minimized immutable provenance, and uses a fenced external-action
+  ledger before creating or updating one bounded GitHub issue comment.
 
 ## Prerequisites
 
@@ -82,9 +85,10 @@ The worker uses the same non-root application image. It can also be run directly
 make run-worker
 ```
 
-No production task handler exists yet. The deterministic `diagnostic` handler is disabled
-by default and settings reject enabling it in staging or production. For development or
-tests only, set `NINJATECH_ENABLE_DIAGNOSTIC_HANDLER=true`.
+The deterministic `diagnostic` handler and the `deployment_context_sync` integration
+handler are disabled by default. Because task creation and approval are still
+unauthenticated, settings reject the integration handler in staging and production. It may
+be enabled only in development, test, demo, or a deliberately controlled sandbox.
 
 ## Endpoints
 
@@ -229,6 +233,69 @@ effect performed before a crash. Future external tools must use their own idempo
 bounded calls, outcome verification, and reconciliation; exactly-once execution cannot be
 promised across independent systems.
 
+## Deployment-context workflow (Checkpoint 4A)
+
+The strict task input is:
+
+```json
+{
+  "task_type": "deployment_context_sync",
+  "input": {
+    "jira_issue_key": "ENG-123",
+    "github_repository": "customer/example-service",
+    "github_issue_number": 42,
+    "service_id": "payments-api",
+    "publish_slack_notification": false
+  }
+}
+```
+
+Task input cannot provide provider base URLs or credentials. Trusted settings first enforce
+static service, repository, and Jira-project scopes. The handler then fetches and normalizes
+the service-catalog record and evaluates ownership, classification, policy freshness,
+repository authority, automatic-publication permission, and reviewer requirements. A
+`blocked` or `needs_human_review` decision is a successful deterministic task result and
+stops before Jira descriptions or GitHub context are fetched.
+
+For a potentially ready request, the handler verifies the configured GitHub identity,
+fetches bounded GitHub and Jira context, and stores only decision-relevant normalized
+fields. `source_artifacts` are immutable observations with content hashes, schema version,
+classification, redaction evidence, canonical URLs without query parameters, and bounded
+retention. Confidential or restricted policy records are minimized; complete Jira
+descriptions are not retained for those classifications.
+
+The authoritative GitHub action identity is not the task ID. It is the trusted business
+scope:
+
+```text
+deployment_context_sync:v1:{deployment_scope_id}:{repository_id}:{issue_number}:{service_id}:github_comment
+```
+
+Independent task submissions for the same business scope therefore converge on one
+`external_actions` row. The desired comment fingerprint and deterministic decision snapshot
+bind the action to the exact normalized evidence and policy version. Same scope and same
+desired state replays the confirmed action. Changed desired state requires an explicit
+revision, verified exact comment ID and marker, current publication authority, and an
+update-enabled service policy; otherwise the result requires human review.
+
+Before a write, the worker reconciles an exact known comment ID. Only when no reliable ID
+exists does it perform a bounded hidden-marker search. A deleted bound comment, a removed
+marker, multiple matches, or incomplete pagination requires review and never silently
+creates a replacement.
+
+A write timeout is not an ordinary retry: the provider may have accepted the comment even
+though the worker did not receive a usable response. Such a write becomes
+`outcome_unknown`. A replacement worker waits through `reconcile_not_before`, searches for
+the provider ID or stable marker, and only issues a create after bounded reconciliation
+proves there is no match. Read-only reconciliation failures are retryable but never
+`outcome_unknown`.
+
+The action row and an append-only `external_action_attempts` record are updated atomically
+under the current task execution fence. This prevents a stale worker from changing either
+record, but it cannot undo an effect already accepted by GitHub. Provider-level
+exactly-once creation is therefore not mathematically guaranteed; reconciliation reduces
+duplicates and converts uncertainty into human review.
+
 ## Configuration
 
 All application variables use the `NINJATECH_` prefix:
@@ -250,9 +317,21 @@ All application variables use the `NINJATECH_` prefix:
 | `NINJATECH_WORKER_RETRY_CAP_SECONDS` | No | `300.0` | Maximum retry backoff ceiling |
 | `NINJATECH_WORKER_MAX_RESULT_BYTES` | No | `262144` | Maximum canonical JSON result bytes |
 | `NINJATECH_ENABLE_DIAGNOSTIC_HANDLER` | No | `false` | Enables non-production diagnostic work |
+| `NINJATECH_ENABLE_DEPLOYMENT_CONTEXT_SYNC` | No | `false` | Enables the non-production integration workflow |
+| `NINJATECH_DEPLOYMENT_SCOPE_ID` | When enabled | None | Trusted business action namespace |
+| `NINJATECH_DEPLOYMENT_ALLOWED_SERVICE_IDS` | When enabled | `[]` | JSON list of allowed services |
+| `NINJATECH_DEPLOYMENT_ALLOWED_GITHUB_REPOSITORIES` | When enabled | `[]` | JSON list of allowed repositories |
+| `NINJATECH_DEPLOYMENT_ALLOWED_JIRA_PROJECTS` | When enabled | `[]` | JSON list of allowed Jira projects |
+| `NINJATECH_SERVICE_CATALOG_BASE_URL` | When enabled | Local simulator URL | Trusted catalog endpoint |
+| `NINJATECH_JIRA_BASE_URL` | When enabled | Local simulator URL | Trusted Jira endpoint |
+| `NINJATECH_GITHUB_BASE_URL` | When enabled | Local simulator URL | Trusted GitHub endpoint |
+| `NINJATECH_INTEGRATION_PROVIDER_WRITE_TIMEOUT_SECONDS` | No | `8.0` | Bounded provider write duration |
+| `NINJATECH_INTEGRATION_SETTLEMENT_DELAY_SECONDS` | No | `3.0` | Holdoff before ambiguous-write reconciliation |
 
-Pydantic validates these values during application startup. Real credentials belong only in
-the environment or an ignored `.env` file.
+Pydantic validates these values during application startup. Provider tokens can come from
+their dedicated environment variables or corresponding mounted `*_TOKEN_FILE` settings,
+never both. Real credentials do not belong in source, task input, artifacts, results, logs,
+or CI output.
 
 ## Logging
 
@@ -290,7 +369,10 @@ GitHub Actions has two independent jobs:
 - The container smoke job validates the Compose configuration, builds the application image,
   confirms its runtime user is non-root, waits for PostgreSQL, explicitly applies migrations,
   starts the API and diagnostic worker, checks `/health` and `/ready`, executes success,
-  retry-then-success, and cooperative-cancellation tasks, and checks their persisted states.
+  retry-then-success, and cooperative-cancellation tasks. Checkpoint 4A also starts the
+  test/demo-only provider simulator, proves policy-first short-circuiting, creates and
+  replays one authoritative GitHub comment, reconciles an ambiguous successful write, and
+  verifies delayed acceptance across task lease expiry does not create a duplicate.
 
 The smoke job then stops PostgreSQL while leaving the API running. `/health` must remain
 `200` because it reports process liveness, while `/ready` must become `503` because the
@@ -326,3 +408,7 @@ table and global idempotency uniqueness. `0003_reliable_worker_execution` adds t
 execution/lease fields, maintainable state constraints, claim and expiry indexes, and the
 durable `task_attempts` table. Its downgrade removes only Milestone 3 schema objects; no
 migration inserts fake data.
+
+`0004_enterprise_integrations` adds immutable `source_artifacts`, business-scoped
+`external_actions`, and append-only `external_action_attempts`. Its only indexes support
+task evidence lookup and ordered action history; it inserts no customer or simulator data.

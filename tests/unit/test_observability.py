@@ -58,3 +58,35 @@ def test_json_formatter_never_serializes_exception_messages_or_tracebacks() -> N
     assert "safe_failure_event" in rendered
     assert "exception-secret-never-log" not in rendered
     assert "Traceback" not in rendered
+
+
+def test_integration_logs_use_allowlisted_metadata_only() -> None:
+    record = logging.LogRecord(
+        name="ninjatech_deployment_lab.integrations.workflow",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="external_action_succeeded",
+        args=(),
+        exc_info=None,
+    )
+    record.action_id = "action-safe-id"
+    record.provider = "github"
+    record.task_input = {"description": "complete-customer-payload-never-log"}
+    record.authorization = "Bearer provider-secret-never-log"
+    record.result = {"comment": "complete-comment-never-log"}
+    record.action_scope_key = "customer-business-scope-never-log"
+    record.lease_token_hash = "lease-hash-never-log"
+
+    rendered = JsonFormatter(service_name="test-service").format(record)
+
+    assert "action-safe-id" in rendered
+    assert "github" in rendered
+    for secret in (
+        "complete-customer-payload-never-log",
+        "provider-secret-never-log",
+        "complete-comment-never-log",
+        "customer-business-scope-never-log",
+        "lease-hash-never-log",
+    ):
+        assert secret not in rendered

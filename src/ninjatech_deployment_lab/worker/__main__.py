@@ -8,6 +8,18 @@ from uuid import uuid4
 
 from ninjatech_deployment_lab.config import get_settings
 from ninjatech_deployment_lab.database import create_database_engine, create_session_factory
+from ninjatech_deployment_lab.integrations.connectors import (
+    GitHubClient,
+    JiraClient,
+    ServiceCatalogClient,
+)
+from ninjatech_deployment_lab.integrations.credentials import EnvironmentOrFileCredential
+from ninjatech_deployment_lab.integrations.http import IntegrationHttpClient
+from ninjatech_deployment_lab.integrations.persistence import (
+    ExternalActionRepository,
+    SourceArtifactRepository,
+)
+from ninjatech_deployment_lab.integrations.workflow import DeploymentContextSyncHandler
 from ninjatech_deployment_lab.observability import configure_logging
 from ninjatech_deployment_lab.worker.diagnostic import DiagnosticHandler
 from ninjatech_deployment_lab.worker.handlers import HandlerRegistry
@@ -25,8 +37,52 @@ async def async_main() -> None:
     engine = create_database_engine(settings)
     session_factory = create_session_factory(engine)
     registry = HandlerRegistry()
+    integration_http: IntegrationHttpClient | None = None
     if settings.enable_diagnostic_handler:
         registry.register("diagnostic", DiagnosticHandler())
+    if settings.enable_deployment_context_sync:
+        integration_http = IntegrationHttpClient(settings)
+        service_catalog_credential = EnvironmentOrFileCredential(
+            value=settings.service_catalog_token,
+            path=settings.service_catalog_token_file,
+        )
+        jira_credential = EnvironmentOrFileCredential(
+            value=settings.jira_api_token,
+            path=settings.jira_api_token_file,
+        )
+        github_credential = EnvironmentOrFileCredential(
+            value=settings.github_token,
+            path=settings.github_token_file,
+        )
+        registry.register(
+            "deployment_context_sync",
+            DeploymentContextSyncHandler(
+                settings=settings,
+                service_catalog=ServiceCatalogClient(
+                    http=integration_http,
+                    base_url=settings.service_catalog_base_url,
+                    credential=service_catalog_credential,
+                    settings=settings,
+                ),
+                jira=JiraClient(
+                    http=integration_http,
+                    base_url=settings.jira_base_url,
+                    credential=jira_credential,
+                    settings=settings,
+                ),
+                github=GitHubClient(
+                    http=integration_http,
+                    base_url=settings.github_base_url,
+                    credential=github_credential,
+                    settings=settings,
+                ),
+                artifacts=SourceArtifactRepository(
+                    session_factory,
+                    maximum_bytes=settings.source_artifact_max_bytes,
+                ),
+                actions=ExternalActionRepository(session_factory),
+            ),
+        )
 
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:12]}"
     runner = WorkerRunner(
@@ -41,6 +97,8 @@ async def async_main() -> None:
     try:
         await runner.run()
     finally:
+        if integration_http is not None:
+            await integration_http.aclose()
         await engine.dispose()
 
 

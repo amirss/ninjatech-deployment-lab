@@ -148,6 +148,7 @@ class WorkerRunner:
             attempt_id=claim.attempt_id,
             attempt_number=claim.attempt_number,
             max_attempts=claim.max_attempts,
+            execution_fence=claim.execution_fence,
         )
         context = HandlerContext(
             task_id=claim.task_id,
@@ -356,6 +357,7 @@ class WorkerRunner:
                 terminal_reason="retryable_error",
                 retryable=True,
                 started_at=started_at,
+                retry_after_seconds=error.retry_after_seconds,
             )
             return
         except HandlerContractError as error:
@@ -441,9 +443,14 @@ class WorkerRunner:
         terminal_reason: str,
         retryable: bool,
         started_at: float,
+        retry_after_seconds: float | None = None,
     ) -> None:
         if retryable and claim.attempt_number < claim.max_attempts:
-            delay_seconds = self.retry_policy.delay_seconds(claim.attempt_number)
+            delay_seconds = (
+                retry_after_seconds
+                if retry_after_seconds is not None
+                else self.retry_policy.delay_seconds(claim.attempt_number)
+            )
             fence_result = await self.repository.schedule_retry(
                 claim,
                 delay_seconds=delay_seconds,

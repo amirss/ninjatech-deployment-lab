@@ -13,6 +13,7 @@ from ninjatech_deployment_lab.tasks.domain import (
     InvalidTaskTransitionError,
     TaskNotFoundError,
 )
+from ninjatech_deployment_lab.tasks.input_validation import normalize_task_input
 from ninjatech_deployment_lab.tasks.schemas import (
     ErrorResponse,
     IdempotencyKey,
@@ -117,7 +118,7 @@ async def create_task(
     ).create_task(
         idempotency_key=idempotency_key,
         task_type=payload.task_type,
-        task_input=payload.input,
+        task_input=normalize_task_input(payload.task_type, payload.input),
     )
     response.status_code = status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
     return TaskResponse.model_validate(result.task)

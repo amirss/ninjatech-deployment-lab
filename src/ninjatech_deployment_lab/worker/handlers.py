@@ -6,7 +6,11 @@ from typing import Protocol
 from uuid import UUID
 
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
-from ninjatech_deployment_lab.worker.domain import OwnershipLostError, TaskCancelled
+from ninjatech_deployment_lab.worker.domain import (
+    ExecutionFence,
+    OwnershipLostError,
+    TaskCancelled,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,7 @@ class TaskExecution:
     attempt_id: UUID
     attempt_number: int
     max_attempts: int
+    execution_fence: ExecutionFence
 
 
 class HandlerContext:

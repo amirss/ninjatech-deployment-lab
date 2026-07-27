@@ -34,8 +34,12 @@ class JsonFormatter(logging.Formatter):
     """Serialize application log records as compact JSON objects."""
 
     extra_fields = (
+        "action_id",
+        "action_status",
         "attempt_id",
         "attempt_number",
+        "artifact_id",
+        "decision_reason_code",
         "duration_ms",
         "environment",
         "event",
@@ -48,6 +52,10 @@ class JsonFormatter(logging.Formatter):
         "next_attempt_at",
         "next_attempt_delay_seconds",
         "previous_status",
+        "provider",
+        "provider_resource_id",
+        "resource_type",
+        "revision",
         "status_code",
         "task_id",
         "task_type",

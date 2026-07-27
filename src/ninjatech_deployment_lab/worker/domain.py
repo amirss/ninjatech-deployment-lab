@@ -17,8 +17,14 @@ RandomSource = Callable[[], float]
 class RetryableTaskError(Exception):
     """A sanitized handler outcome that may be attempted again."""
 
-    def __init__(self, error_code: str = "retryable_task_error") -> None:
+    def __init__(
+        self,
+        error_code: str = "retryable_task_error",
+        *,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         self.error_code = error_code
+        self.retry_after_seconds = retry_after_seconds
         super().__init__("Task handler reported a retryable failure")
 
 
@@ -109,6 +115,27 @@ class ClaimedTask:
     lease_token_hash: str
     task_type: str
     task_input: dict[str, JsonValue]
+
+    @property
+    def execution_fence(self) -> ExecutionFence:
+        return ExecutionFence(
+            task_id=self.task_id,
+            attempt_id=self.attempt_id,
+            attempt_number=self.attempt_number,
+            worker_id=self.worker_id,
+            lease_token_hash=self.lease_token_hash,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionFence:
+    """Database-verifiable ownership capability; never exposed or logged."""
+
+    task_id: UUID
+    attempt_id: UUID
+    attempt_number: int
+    worker_id: str
+    lease_token_hash: str
 
 
 @dataclass(frozen=True, slots=True)

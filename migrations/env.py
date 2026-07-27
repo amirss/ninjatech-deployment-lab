@@ -8,6 +8,7 @@ from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from ninjatech_deployment_lab.config import get_settings
+from ninjatech_deployment_lab.integrations.model import ExternalAction
 from ninjatech_deployment_lab.tasks.model import Task
 
 config = context.config
@@ -18,6 +19,7 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Task.metadata
+assert ExternalAction.metadata is target_metadata
 
 
 def run_migrations_offline() -> None:
