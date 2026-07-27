@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 
 from ninjatech_deployment_lab.observability import JsonFormatter, normalize_request_id
 
@@ -34,3 +35,26 @@ def test_json_formatter_emits_machine_readable_fields() -> None:
     assert payload["level"] == "INFO"
     assert payload["message"] == "test_message"
     assert payload["service"] == "test-service"
+
+
+def test_json_formatter_never_serializes_exception_messages_or_tracebacks() -> None:
+    try:
+        raise RuntimeError("exception-secret-never-log")
+    except RuntimeError:
+        exception_info = sys.exc_info()
+
+    record = logging.LogRecord(
+        name="test.logger",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="safe_failure_event",
+        args=(),
+        exc_info=exception_info,
+    )
+
+    rendered = JsonFormatter(service_name="test-service").format(record)
+
+    assert "safe_failure_event" in rendered
+    assert "exception-secret-never-log" not in rendered
+    assert "Traceback" not in rendered

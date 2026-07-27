@@ -70,7 +70,7 @@ jobs:
         run: uv run pytest
 
   container-smoke:
-    name: Container smoke test
+    name: API and worker container smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

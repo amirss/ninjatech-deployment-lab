@@ -1,12 +1,15 @@
 UV ?= uv
 
-.PHONY: install run format format-check lint typecheck test check migrate container-smoke compose-up compose-down
+.PHONY: install run run-worker format format-check lint typecheck test check migrate container-smoke compose-up compose-down
 
 install:
 	$(UV) sync --python 3.12
 
 run:
 	$(UV) run uvicorn ninjatech_deployment_lab.main:app --reload
+
+run-worker:
+	$(UV) run python -m ninjatech_deployment_lab.worker
 
 format:
 	$(UV) run ruff format .

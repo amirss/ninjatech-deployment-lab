@@ -34,17 +34,25 @@ class JsonFormatter(logging.Formatter):
     """Serialize application log records as compact JSON objects."""
 
     extra_fields = (
+        "attempt_id",
+        "attempt_number",
         "duration_ms",
         "environment",
         "event",
+        "error_code",
+        "exception_type",
         "http_method",
         "http_path",
         "idempotency_key_hash",
         "new_status",
+        "next_attempt_at",
+        "next_attempt_delay_seconds",
         "previous_status",
         "status_code",
         "task_id",
         "task_type",
+        "terminal_reason",
+        "worker_id_hash",
     )
 
     def __init__(self, service_name: str) -> None:
@@ -67,9 +75,6 @@ class JsonFormatter(logging.Formatter):
         for field_name in self.extra_fields:
             if hasattr(record, field_name):
                 payload[field_name] = getattr(record, field_name)
-
-        if record.exc_info is not None:
-            payload["exception"] = self.formatException(record.exc_info)
 
         return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 

@@ -3,11 +3,12 @@
 ## Project scope
 
 This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
-Agent. Milestone 2 adds only a persistent and idempotent task state machine to the FastAPI,
-PostgreSQL, migration, observability, test, and delivery foundation.
+Agent. Milestone 3 adds reliable, single-task worker execution to the persistent and
+idempotent FastAPI/PostgreSQL foundation.
 
-Do not add LLMs, agent frameworks, Redis, Celery, Jira, GitHub, Slack, AWS, or
-ticket-processing behavior unless a later milestone explicitly authorizes them.
+Do not add LLMs, agent frameworks, external integrations, authentication, frontend work,
+Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS infrastructure unless a later
+milestone explicitly authorizes it.
 
 ## Engineering rules
 
@@ -22,7 +23,18 @@ ticket-processing behavior unless a later milestone explicitly authorizes them.
 - Keep the container smoke test self-cleaning and free of credential output.
 - Keep task transition rules centralized in the task domain module.
 - Use database uniqueness for create idempotency and row locks for state transitions.
-- Never log complete task input, raw idempotency keys, or SQL bound parameters.
+- Claim worker tasks with short `FOR UPDATE SKIP LOCKED` transactions; never hold a
+  transaction during handler execution.
+- Atomically update the task and exact active attempt for every heartbeat, recovery, and
+  finalization; roll back on an unexpected row count.
+- Fence every worker write by current worker, attempt number, and lease-token hash.
+- Treat heartbeat uncertainty as ownership loss: cancel local work, stop claiming, discard
+  late results, and do not finalize.
+- Keep customer cancellation, timeout, shutdown, and ownership loss as distinct causes.
+- Never log complete task input, results, raw or hashed lease material, idempotency data,
+  credentials, exception messages, or SQL bound parameters.
+- Keep the diagnostic handler disabled by default and impossible to enable in staging or
+  production.
 - Prefer the smallest production-credible implementation and avoid speculative abstractions.
 
 ## Deferred design
@@ -34,25 +46,47 @@ tenant. When tenancy is introduced, idempotency uniqueness must become tenant-sc
 
 - `pending_approval -> approved`
 - `approved -> running`
+- `running -> approved` only for a scheduled retry
 - `running -> succeeded`
 - `running -> failed`
 - `pending_approval -> cancelled`
 - `approved -> cancelled`
+- `running -> cancelled` only after durable cooperative cancellation
 - `succeeded`, `failed`, and `cancelled` are terminal.
 - Public API commands are limited to create, retrieve, approve, and cancel.
 - Concurrent commands for one task must lock and serialize that task row.
+
+## Worker guarantees
+
+- Execution is at least once, not exactly once.
+- Approval sets `available_at = clock_timestamp()` in the locked transition transaction.
+- Claims commit the running task and its numbered attempt before calling a handler.
+- Leases allow crash recovery after a row lock has been released.
+- Heartbeats are quieter DEBUG events and extend only a currently fenced lease.
+- Recovery preserves expired attempts and either cancels, schedules a retry, or fails.
+- Retries use bounded exponential equal-jitter backoff and never busy-loop.
+- Results must be finite JSON objects within the configured byte limit.
+- Shutdown grace expiry and ownership loss deliberately leave the running record for lease
+  recovery rather than guessing an outcome.
+- Cooperative cancellation cannot interrupt every blocking third-party call; future
+  handlers must use bounded timeouts.
+- Fencing blocks stale database updates but cannot undo external side effects. Future tools
+  require separate idempotency and outcome reconciliation.
+- `task_attempts` is durable audit evidence; prior attempts are never overwritten.
 
 ## Commands
 
 - `make install`: install locked development dependencies.
 - `make run`: run the API locally.
+- `make run-worker`: run one worker process locally.
 - `make format`: format the repository.
 - `make lint`: run Ruff lint checks.
 - `make typecheck`: run strict mypy checks.
 - `make test`: run pytest.
 - `make check`: run all non-mutating quality checks.
 - `make migrate`: apply Alembic migrations.
-- `make container-smoke`: build and exercise the complete Docker Compose stack.
+- `make container-smoke`: migrate and exercise the API, PostgreSQL, and explicitly enabled
+  diagnostic worker, including success, retry, cancellation, and readiness degradation.
 
 <!-- codebase-memory-mcp:start -->
 # Codebase Knowledge Graph (codebase-memory-mcp)

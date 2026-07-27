@@ -28,6 +28,8 @@ def _task_with_sensitive_internal_data() -> Task:
             "credential": "complete-task-input-secret",
         },
         status=TaskStatus.PENDING_APPROVAL,
+        attempt_count=0,
+        max_attempts=3,
         created_at=timestamp,
         updated_at=timestamp,
     )
@@ -39,6 +41,8 @@ def test_task_response_excludes_internal_idempotency_fields() -> None:
 
     assert "idempotency_key" not in payload
     assert "request_fingerprint" not in payload
+    assert "worker_id" not in payload
+    assert "lease_token_hash" not in payload
 
 
 def test_lifecycle_logs_exclude_raw_key_and_complete_input(

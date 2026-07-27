@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
@@ -23,6 +24,27 @@ class TaskCommand(StrEnum):
     START = "start"
     SUCCEED = "succeed"
     FAIL = "fail"
+    RETRY = "retry"
+    FINALIZE_CANCELLATION = "finalize_cancellation"
+
+
+class AttemptStatus(StrEnum):
+    """Durable outcomes for one execution attempt."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    RETRY_SCHEDULED = "retry_scheduled"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    LEASE_EXPIRED = "lease_expired"
+
+
+@dataclass(frozen=True, slots=True)
+class CancellationDecision:
+    """Centralized state and metadata decision for a cancel command."""
+
+    new_status: TaskStatus
+    request_cancellation: bool
 
 
 class TaskNotFoundError(Exception):
@@ -59,6 +81,7 @@ _TRANSITIONS: dict[TaskCommand, dict[TaskStatus, TaskStatus]] = {
     TaskCommand.CANCEL: {
         TaskStatus.PENDING_APPROVAL: TaskStatus.CANCELLED,
         TaskStatus.APPROVED: TaskStatus.CANCELLED,
+        TaskStatus.RUNNING: TaskStatus.RUNNING,
         TaskStatus.CANCELLED: TaskStatus.CANCELLED,
     },
     TaskCommand.START: {
@@ -70,6 +93,12 @@ _TRANSITIONS: dict[TaskCommand, dict[TaskStatus, TaskStatus]] = {
     TaskCommand.FAIL: {
         TaskStatus.RUNNING: TaskStatus.FAILED,
     },
+    TaskCommand.RETRY: {
+        TaskStatus.RUNNING: TaskStatus.APPROVED,
+    },
+    TaskCommand.FINALIZE_CANCELLATION: {
+        TaskStatus.RUNNING: TaskStatus.CANCELLED,
+    },
 }
 
 
@@ -79,3 +108,24 @@ def apply_task_command(current_status: TaskStatus, command: TaskCommand) -> Task
         return _TRANSITIONS[command][current_status]
     except KeyError:
         raise InvalidTaskTransitionError(current_status, command) from None
+
+
+def decide_cancellation(
+    current_status: TaskStatus,
+    *,
+    already_requested: bool,
+) -> CancellationDecision:
+    """Return the centralized status and cancellation-marker decision."""
+    new_status = apply_task_command(current_status, TaskCommand.CANCEL)
+    return CancellationDecision(
+        new_status=new_status,
+        request_cancellation=(
+            current_status
+            in {
+                TaskStatus.PENDING_APPROVAL,
+                TaskStatus.APPROVED,
+                TaskStatus.RUNNING,
+            }
+            and not already_requested
+        ),
+    )
