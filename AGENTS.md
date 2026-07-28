@@ -37,6 +37,9 @@ infrastructure unless a later milestone explicitly authorizes it.
   production.
 - Keep `deployment_context_sync` disabled by default and impossible to enable in staging or
   production while task creation and approval are unauthenticated.
+- Require an explicitly configured GitHub principal when `deployment_context_sync` is
+  enabled, and verify returned repository, issue, and Jira identities before any write.
+- Reject GitHub pull requests as issue-comment targets.
 - Treat the service catalog as authority for data access and publication. Stop before Jira
   or GitHub reads when catalog policy blocks or requires review.
 - Never accept provider base URLs, credentials, or arbitrary publication text from task
@@ -45,6 +48,8 @@ infrastructure unless a later milestone explicitly authorizes it.
   domain values and sanitized errors.
 - Fence every external-action transition with the current task lease and atomically append
   its exact `external_action_attempts` evidence row.
+- After a confirmed provider write, persist external success through the current fence
+  before honoring customer cancellation; ownership loss must still block persistence.
 - Reserve `outcome_unknown` for writes that may have reached a provider. A failed read-only
   reconciliation is retryable or permanent, never outcome unknown.
 - Reconcile a known GitHub comment ID before marker search. Never silently recreate a

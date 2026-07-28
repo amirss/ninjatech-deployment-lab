@@ -24,6 +24,7 @@ def _settings() -> Settings:
         deployment_allowed_github_repositories=("customer/example-service",),
         deployment_allowed_jira_projects=("ENG",),
         deployment_minimum_policy_version=7,
+        github_expected_login="simulator-bot",
     )
 
 
@@ -85,8 +86,27 @@ def test_conflicting_records_require_review() -> None:
     assert result.reason_codes == (DecisionReasonCode.SERVICE_RECORD_CONFLICT,)
 
 
+def test_conflicting_automatic_update_authority_requires_review() -> None:
+    result = evaluate_service_catalog(
+        _task_input(),
+        (
+            _record(source_version="v7", allow_automatic_updates=True),
+            _record(source_version="v8", allow_automatic_updates=False),
+        ),
+        _settings(),
+    )
+    assert result.reason_codes == (DecisionReasonCode.SERVICE_RECORD_CONFLICT,)
+
+
 def test_static_scope_blocks_before_provider_access() -> None:
     task_input = _task_input().model_copy(update={"service_id": "other-service"})
     result = evaluate_static_scope(task_input, _settings())
     assert result is not None
     assert result.outcome is DecisionOutcome.BLOCKED
+
+
+def test_static_scope_uses_a_jira_specific_reason() -> None:
+    task_input = _task_input().model_copy(update={"jira_issue_key": "OPS-123"})
+    result = evaluate_static_scope(task_input, _settings())
+    assert result is not None
+    assert result.reason_codes == (DecisionReasonCode.JIRA_PROJECT_NOT_ALLOWED,)

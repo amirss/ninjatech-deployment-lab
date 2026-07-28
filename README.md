@@ -257,9 +257,12 @@ repository authority, automatic-publication permission, and reviewer requirement
 `blocked` or `needs_human_review` decision is a successful deterministic task result and
 stops before Jira descriptions or GitHub context are fetched.
 
-For a potentially ready request, the handler verifies the configured GitHub identity,
-fetches bounded GitHub and Jira context, and stores only decision-relevant normalized
-fields. `source_artifacts` are immutable observations with content hashes, schema version,
+For a potentially ready request, the handler requires and verifies the configured GitHub
+principal using case-insensitive GitHub-login comparison, then fetches bounded GitHub and
+Jira context. Returned repository, issue, and Jira identities must match the requested
+resources, and pull requests are rejected as issue-comment targets before any write.
+Only decision-relevant normalized fields are stored. `source_artifacts` are immutable
+observations with content hashes, schema version,
 classification, redaction evidence, canonical URLs without query parameters, and bounded
 retention. Confidential or restricted policy records are minimized; complete Jira
 descriptions are not retained for those classifications.
@@ -325,6 +328,7 @@ All application variables use the `NINJATECH_` prefix:
 | `NINJATECH_SERVICE_CATALOG_BASE_URL` | When enabled | Local simulator URL | Trusted catalog endpoint |
 | `NINJATECH_JIRA_BASE_URL` | When enabled | Local simulator URL | Trusted Jira endpoint |
 | `NINJATECH_GITHUB_BASE_URL` | When enabled | Local simulator URL | Trusted GitHub endpoint |
+| `NINJATECH_GITHUB_EXPECTED_LOGIN` | When enabled | None | Expected GitHub principal, compared case-insensitively |
 | `NINJATECH_INTEGRATION_PROVIDER_WRITE_TIMEOUT_SECONDS` | No | `8.0` | Bounded provider write duration |
 | `NINJATECH_INTEGRATION_SETTLEMENT_DELAY_SECONDS` | No | `3.0` | Holdoff before ambiguous-write reconciliation |
 

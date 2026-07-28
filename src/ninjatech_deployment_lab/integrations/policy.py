@@ -47,7 +47,7 @@ def evaluate_static_scope(
     }:
         return _result(
             DecisionOutcome.BLOCKED,
-            DecisionReasonCode.REPOSITORY_NOT_ALLOWED,
+            DecisionReasonCode.JIRA_PROJECT_NOT_ALLOWED,
             "The requested Jira project is outside the configured deployment scope.",
         )
     return None
@@ -85,6 +85,7 @@ def evaluate_service_catalog(
             record.data_classification,
             record.automatic_publication_allowed,
             record.required_reviewer,
+            record.allow_automatic_updates,
         )
         for record in candidates
     }

@@ -140,6 +140,7 @@ def test_comment_rendering_is_deterministic_and_escapes_provider_text() -> None:
         issue_number=7,
         issue_state="open",
         issue_title="<unsafe>",
+        is_pull_request=False,
         source_url="https://github.example/issues/7",
         source_version="a" * 40,
     )

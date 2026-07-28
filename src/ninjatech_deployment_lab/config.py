@@ -106,6 +106,9 @@ class Settings(BaseSettings):
             if not self.deployment_allowed_jira_projects:
                 msg = "at least one Jira project must be allowlisted"
                 raise ValueError(msg)
+            if self.github_expected_login is None or not self.github_expected_login.strip():
+                msg = "github_expected_login is required when deployment_context_sync is enabled"
+                raise ValueError(msg)
             for base_url in (
                 self.service_catalog_base_url,
                 self.jira_base_url,

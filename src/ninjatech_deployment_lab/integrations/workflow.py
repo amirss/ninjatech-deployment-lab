@@ -148,8 +148,33 @@ class DeploymentContextSyncHandler:
             )
         )
         context.raise_if_cancelled()
+        if github.full_name.casefold() != task_input.github_repository.casefold():
+            return self._review_result(
+                evaluation=catalog_evaluation,
+                references=catalog_references,
+                code=DecisionReasonCode.GITHUB_REPOSITORY_IDENTITY_MISMATCH,
+                reason="GitHub returned a repository other than the requested repository.",
+                generated_at=datetime.now(UTC),
+            )
+        if github.issue_number != task_input.github_issue_number:
+            return self._review_result(
+                evaluation=catalog_evaluation,
+                references=catalog_references,
+                code=DecisionReasonCode.GITHUB_ISSUE_IDENTITY_MISMATCH,
+                reason="GitHub returned an issue other than the requested issue.",
+                generated_at=datetime.now(UTC),
+            )
         github_reference = await self._record_github(task, github)
         references = (*catalog_references, github_reference)
+        if github.is_pull_request:
+            return self._review_result(
+                evaluation=catalog_evaluation,
+                references=references,
+                code=DecisionReasonCode.TARGET_IS_PULL_REQUEST,
+                reason="Pull requests are not valid targets for deployment-context comments.",
+                generated_at=datetime.now(UTC),
+                outcome=DecisionOutcome.BLOCKED,
+            )
         if github.archived:
             return self._review_result(
                 evaluation=catalog_evaluation,
@@ -175,6 +200,14 @@ class DeploymentContextSyncHandler:
             )
         )
         context.raise_if_cancelled()
+        if jira.key.casefold() != task_input.jira_issue_key.casefold():
+            return self._review_result(
+                evaluation=catalog_evaluation,
+                references=references,
+                code=DecisionReasonCode.JIRA_ISSUE_IDENTITY_MISMATCH,
+                reason="Jira returned a work item other than the requested issue.",
+                generated_at=datetime.now(UTC),
+            )
         jira_reference = await self._record_jira(task, jira, service.data_classification)
         references = (*references, jira_reference)
         decision = DeploymentContextDecision(
@@ -356,6 +389,7 @@ class DeploymentContextSyncHandler:
                     )
                 existing = None
             else:
+                context.raise_if_ownership_lost()
                 action = await self._complete_success(
                     task=task,
                     action=action,
@@ -364,6 +398,7 @@ class DeploymentContextSyncHandler:
                     expected={ExternalActionStatus.RECONCILING},
                     transition="reconciled_succeeded",
                 )
+                context.raise_if_cancelled()
                 return self._success_result(decision, references, action)
 
         action = await self._actions.transition(
@@ -431,7 +466,7 @@ class DeploymentContextSyncHandler:
                 error_code=error.error_code,
             )
             raise PermanentTaskError(error.error_code) from None
-        context.raise_if_cancelled()
+        context.raise_if_ownership_lost()
         action = await self._complete_success(
             task=task,
             action=action,
@@ -440,6 +475,7 @@ class DeploymentContextSyncHandler:
             expected={ExternalActionStatus.EXECUTING},
             transition="write_succeeded",
         )
+        context.raise_if_cancelled()
         return self._success_result(decision, references, action)
 
     async def _reconcile_comment(
@@ -574,7 +610,6 @@ class DeploymentContextSyncHandler:
                         "url": comment.url,
                     }
                 ),
-                "completed_at": datetime.now(UTC),
             },
         )
 
@@ -704,6 +739,16 @@ class DeploymentContextSyncHandler:
 
     @staticmethod
     def _decision_snapshot_hash(decision: DeploymentContextDecision) -> str:
+        references = sorted(
+            decision.source_references,
+            key=lambda reference: (
+                reference.provider,
+                reference.resource_type,
+                reference.provider_resource_identifier,
+                reference.source_version,
+                reference.content_hash,
+            ),
+        )
         return sha256_json(
             {
                 "workflow_version": WORKFLOW_VERSION,
@@ -718,7 +763,7 @@ class DeploymentContextSyncHandler:
                         "source_version": reference.source_version,
                         "content_hash": reference.content_hash,
                     }
-                    for reference in decision.source_references
+                    for reference in references
                 ],
             }
         )
@@ -768,9 +813,10 @@ class DeploymentContextSyncHandler:
         code: DecisionReasonCode,
         reason: str,
         generated_at: datetime,
+        outcome: DecisionOutcome = DecisionOutcome.NEEDS_HUMAN_REVIEW,
     ) -> dict[str, JsonValue]:
         decision = DeploymentContextDecision(
-            outcome=DecisionOutcome.NEEDS_HUMAN_REVIEW,
+            outcome=outcome,
             reason_codes=(code,),
             reasons=(reason,),
             source_references=references,
@@ -826,17 +872,17 @@ class ReconciliationNeedsReview(Exception):
 
 
 def _action_reference(action: ExternalAction) -> ExternalActionReference:
-    if action.provider_resource_identifier is None:
-        # The action ID remains useful evidence for a review outcome, but public
-        # result models require a provider identifier only for confirmed actions.
-        provider_identifier = "unconfirmed"
-    else:
-        provider_identifier = action.provider_resource_identifier
+    provider_identifier = action.provider_resource_identifier
+    if (
+        ExternalActionStatus(action.status) is ExternalActionStatus.SUCCEEDED
+        and provider_identifier is None
+    ):
+        raise ExecutionInvariantError("successful external action has no provider identifier")
     return ExternalActionReference(
         action_id=action.id,
         provider=action.provider,
         operation=action.operation,
         revision=action.revision,
         provider_resource_identifier=provider_identifier,
-        provider_url=action.provider_url,
+        provider_url=action.provider_url if provider_identifier is not None else None,
     )

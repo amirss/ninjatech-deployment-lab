@@ -75,6 +75,7 @@ class DecisionReasonCode(StrEnum):
     READY = "ready"
     SERVICE_NOT_ALLOWED = "service_not_allowed"
     REPOSITORY_NOT_ALLOWED = "repository_not_allowed"
+    JIRA_PROJECT_NOT_ALLOWED = "jira_project_not_allowed"
     REPOSITORY_NOT_OWNED_BY_SERVICE = "repository_not_owned_by_service"
     SERVICE_RECORD_CONFLICT = "service_record_conflict"
     SERVICE_RECORD_MALFORMED = "service_record_malformed"
@@ -85,6 +86,10 @@ class DecisionReasonCode(StrEnum):
     REVIEWER_REQUIRED = "reviewer_required"
     REPOSITORY_ARCHIVED = "repository_archived"
     ISSUE_CLOSED = "issue_closed"
+    TARGET_IS_PULL_REQUEST = "target_is_pull_request"
+    GITHUB_REPOSITORY_IDENTITY_MISMATCH = "github_repository_identity_mismatch"
+    GITHUB_ISSUE_IDENTITY_MISMATCH = "github_issue_identity_mismatch"
+    JIRA_ISSUE_IDENTITY_MISMATCH = "jira_issue_identity_mismatch"
     PROVIDER_IDENTITY_UNVERIFIED = "provider_identity_unverified"
     SOURCE_DATA_INCOMPLETE = "source_data_incomplete"
     ACTION_SCOPE_CHANGED = "action_scope_changed"
@@ -127,6 +132,7 @@ class GitHubRepositoryContext(StrictModel):
     issue_number: int = Field(ge=1)
     issue_state: str
     issue_title: str = Field(max_length=500)
+    is_pull_request: bool
     source_url: str
     source_version: str
 
@@ -161,7 +167,7 @@ class ExternalActionReference(StrictModel):
     provider: str
     operation: str
     revision: int
-    provider_resource_identifier: str
+    provider_resource_identifier: str | None
     provider_url: str | None = None
 
 

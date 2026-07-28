@@ -283,6 +283,8 @@ class ExternalActionRepository:
                     ),
                 }
                 update_values.update(values or {})
+                if new_status is ExternalActionStatus.SUCCEEDED:
+                    update_values["completed_at"] = now
                 if settlement_delay_seconds is not None:
                     update_values["write_started_at"] = now
                     update_values["reconcile_not_before"] = now + timedelta(

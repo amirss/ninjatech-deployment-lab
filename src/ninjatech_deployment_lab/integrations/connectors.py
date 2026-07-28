@@ -278,13 +278,16 @@ class GitHubClient(_BaseConnector):
         return headers
 
     async def verify_identity(self, *, correlation_id: str) -> bool:
+        """Verify the configured GitHub login using case-insensitive username semantics."""
         response = await self._read("user", correlation_id=correlation_id)
         try:
             payload = _object_payload(response.payload)
             login = _required_string(payload, "login")
         except (PermanentProviderError, ValueError):
             raise PermanentProviderError("github_contract_error") from None
-        return self._expected_login is None or login == self._expected_login
+        if self._expected_login is None:
+            return False
+        return login.casefold() == self._expected_login.casefold()
 
     async def fetch_context(
         self,
@@ -326,6 +329,7 @@ class GitHubClient(_BaseConnector):
                     "issue_number": _required_int(issue_payload, "number"),
                     "issue_state": _required_string(issue_payload, "state"),
                     "issue_title": _required_string(issue_payload, "title"),
+                    "is_pull_request": "pull_request" in issue_payload,
                     "source_url": canonical_source_url(_required_string(issue_payload, "html_url")),
                     "source_version": (f"{sha}:{_required_string(issue_payload, 'updated_at')}"),
                 }

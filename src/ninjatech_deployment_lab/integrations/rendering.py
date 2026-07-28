@@ -23,12 +23,22 @@ def render_github_comment(
 ) -> str:
     """Render bounded, escaped content without raw descriptions or provider payloads."""
     marker = safe_marker(action_scope_key)
+    references = sorted(
+        decision.source_references,
+        key=lambda reference: (
+            reference.provider,
+            reference.resource_type,
+            reference.provider_resource_identifier,
+            reference.source_version,
+            reference.content_hash,
+        ),
+    )
     source_lines = "\n".join(
         f"- `{html.escape(reference.provider)}` "
         f"`{html.escape(reference.resource_type)}` "
         f"`{html.escape(reference.provider_resource_identifier)}` "
         f"(version `{html.escape(reference.source_version)}`)"
-        for reference in decision.source_references
+        for reference in references
     )
     reason_lines = "\n".join(f"- {html.escape(reason)}" for reason in decision.reasons)
     rendered = (
