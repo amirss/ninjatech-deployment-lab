@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ninjatech-deployment-lab"
 version = "0.1.0"
-description = "Production foundation for the NinjaTech Enterprise Ticket-to-PR Agent"
+description = "Reliability-focused execution substrate for approved enterprise agent work"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

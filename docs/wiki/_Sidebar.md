@@ -4,9 +4,9 @@
 - [Architecture Overview](Architecture-Overview)
 - [Reliable Worker Execution](Reliable-Worker-Execution)
 - [Failure Semantics](Failure-Semantics)
-- [Enterprise Integration Design](Enterprise-Integration-Design)
-- [FDE Walkthrough](FDE-Walkthrough)
-- [Roadmap](Roadmap)
+- [Enterprise Integration Design — Proposed](Enterprise-Integration-Design)
+- [Customer Delivery Walkthrough](FDE-Walkthrough)
+- [Evidence-Gated Roadmap](Roadmap)
 
 ---
 

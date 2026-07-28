@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: install run run-worker format format-check lint typecheck test check migrate container-smoke compose-up compose-down
+.PHONY: install run run-worker format format-check lint typecheck test check migrate demo container-smoke compose-up compose-down
 
 install:
 	$(UV) sync --python 3.12
@@ -30,6 +30,8 @@ check: format-check lint typecheck test
 
 migrate:
 	$(UV) run alembic upgrade head
+
+demo: container-smoke
 
 container-smoke:
 	bash scripts/container-smoke.sh

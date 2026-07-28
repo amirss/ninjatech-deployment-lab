@@ -166,4 +166,8 @@ Two independent GitHub Actions jobs validate the system:
 
 ## Next layer
 
-Milestone 4 adds enterprise integrations and safe external actions. That introduces a new problem: task retries are not enough once the worker changes another company’s system. External actions need business-scoped identity, reconciliation, and explicit handling of unknown outcomes.
+The proposed Milestone 4 adds enterprise integrations and safe external actions. That
+introduces a new problem: task retries are not enough once the worker changes another
+company's system. External actions need business-scoped identity, reconciliation, and
+explicit handling of unknown outcomes. This integration layer is not implemented on the
+default branch.

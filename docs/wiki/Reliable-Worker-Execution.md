@@ -206,4 +206,5 @@ The system is intentionally at least once.
 
 A crash can occur after an external system accepted an action but before the task recorded success. Re-execution may therefore repeat an external side effect unless the integration has its own stable action key and reconciliation logic.
 
-Milestone 4 addresses that boundary explicitly.
+The proposed Milestone 4 design addresses that boundary explicitly; it is not implemented
+on the default branch.

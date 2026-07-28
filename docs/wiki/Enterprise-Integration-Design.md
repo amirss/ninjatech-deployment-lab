@@ -1,8 +1,14 @@
-# Enterprise Integration Design
+# Enterprise integration design — proposed
 
-Milestone 4 introduces the first customer-style workflow: a deterministic deployment-context synchronization process across Jira, GitHub, an internal service catalog, and Slack.
+**Implementation status:** design only. The connectors, source-artifact store,
+external-action ledger, and reconciliation behavior on this page are not implemented on the
+default branch.
 
-No LLM is involved yet. The objective is to prove safe enterprise integration before adding reasoning.
+Milestone 4 proposes the first customer-style workflow: a deterministic deployment-context
+synchronization process across Jira, GitHub, an internal service catalog, and Slack.
+
+No LLM is proposed for this milestone. The objective is to prove safe enterprise
+integration before adding reasoning.
 
 ## Customer scenario
 
@@ -283,9 +289,10 @@ The production upgrade path is:
 
 Because the task API is not yet authenticated, this workflow is hard-disabled in staging and production. It may run only in explicit development, test, or controlled demo environments until authentication and tenancy are added.
 
-## FDE relevance
+## Delivery relevance
 
-This milestone demonstrates the work behind a real enterprise deployment:
+When implemented and verified, this milestone should demonstrate the work behind a real
+enterprise deployment:
 
 - discovering the actual workflow;
 - identifying systems of record;
