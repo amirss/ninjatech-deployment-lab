@@ -2,9 +2,9 @@
 
 ## Project scope
 
-This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
-Agent. Milestone 3 adds reliable, single-task worker execution to the persistent and
-idempotent FastAPI/PostgreSQL foundation.
+This independent repository is a reliability-focused execution substrate for a bounded
+enterprise ticket-to-PR workflow. Milestone 3 adds reliable, single-task worker execution
+to the persistent and idempotent FastAPI/PostgreSQL foundation.
 
 Do not add LLMs, agent frameworks, external integrations, authentication, frontend work,
 Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS infrastructure unless a later
@@ -85,6 +85,7 @@ tenant. When tenancy is introduced, idempotency uniqueness must become tenant-sc
 - `make test`: run pytest.
 - `make check`: run all non-mutating quality checks.
 - `make migrate`: apply Alembic migrations.
+- `make demo`: run the self-cleaning end-to-end reliability proof.
 - `make container-smoke`: migrate and exercise the API, PostgreSQL, and explicitly enabled
   diagnostic worker, including success, retry, cancellation, and readiness degradation.
 

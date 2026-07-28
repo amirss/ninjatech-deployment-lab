@@ -1,57 +1,44 @@
 # NinjaTech Deployment Lab
 
-A production-oriented engineering project demonstrating how autonomous enterprise work can be executed reliably, safely, and transparently.
+A production-oriented execution substrate for approved, long-running enterprise work.
 
-The project is built incrementally around a realistic Forward Deployed Engineer problem:
+The current release demonstrates durable state, idempotency, concurrency control, worker
+ownership, crash recovery, bounded retries, cancellation, and observable delivery. It is an
+independent portfolio project, not an official NinjaTech product.
 
-> How do we turn an approved customer workflow into durable autonomous execution while handling retries, crashes, cancellation, concurrency, authority boundaries, and external-system uncertainty?
+## Current evidence
 
-## What this project demonstrates
+| Area | Status |
+| --- | --- |
+| FastAPI/PostgreSQL service foundation | Implemented and CI-verified |
+| Persistent idempotent task lifecycle | Implemented in PR #1 |
+| Leased and fenced worker execution | Implemented in PR #2 |
+| End-to-end failure/recovery proof | Implemented in the container smoke workflow |
+| Jira/GitHub/Slack workflow | Proposed design; not implemented on `main` |
+| LLM reasoning and evaluations | Not implemented |
+| Authentication, tenancy, and cloud operation | Not implemented |
 
-- Typed Python and FastAPI services
-- PostgreSQL-backed idempotency and concurrency control
-- Explicit task-state transitions
-- Durable worker execution
-- Leases, heartbeats, and fencing
-- Crash recovery and bounded retries
-- Cooperative cancellation
-- Migration and rollback discipline
-- Structured observability
-- Dockerized, non-root execution
-- Real PostgreSQL and end-to-end CI validation
-- Safe enterprise-integration and reconciliation patterns
+The project builds reliability before a reasoning model is granted tool authority. A worker
+is not successful because its process says it succeeded; success must be supported by
+durable state and evidence that survives retries and ownership changes.
 
-## Current status
+## Start with evidence
 
-Milestones 1–3 are complete:
+- [Source repository](https://github.com/amirss/ninjatech-deployment-lab)
+- [CI runs](https://github.com/amirss/ninjatech-deployment-lab/actions)
+- [Seven-minute evidence walkthrough](https://github.com/amirss/ninjatech-deployment-lab/blob/main/docs/DEMO.md)
+- [Engineering decisions](https://github.com/amirss/ninjatech-deployment-lab/blob/main/docs/DECISIONS.md)
 
-1. Production service foundation
-2. Persistent idempotent task state machine
-3. Reliable worker execution
-
-Milestone 4 is in progress:
-
-4. Enterprise integrations and safe external actions
-
-The project deliberately builds reliability before introducing an LLM. A later reasoning agent will operate on top of a durable, observable, and permission-bounded execution system rather than replacing one.
-
-## Core design principle
-
-A worker is not successful because it says it succeeded.
-
-Success must be supported by durable state, verified external outcomes, and an audit trail that survives retries and process failures.
-
-## Explore
+## Explore the system
 
 - [Architecture Overview](Architecture-Overview)
 - [Reliable Worker Execution](Reliable-Worker-Execution)
 - [Failure Semantics](Failure-Semantics)
-- [Enterprise Integration Design](Enterprise-Integration-Design)
-- [Forward Deployed Engineering Walkthrough](FDE-Walkthrough)
-- [Roadmap](Roadmap)
+- [Enterprise Integration Design — Proposed](Enterprise-Integration-Design)
+- [Customer Delivery Walkthrough](FDE-Walkthrough)
+- [Evidence-Gated Roadmap](Roadmap)
 
-## Repository
+## Author
 
-- [Source code](https://github.com/amirss/ninjatech-deployment-lab)
-- [Pull requests](https://github.com/amirss/ninjatech-deployment-lab/pulls)
-- [GitHub Actions](https://github.com/amirss/ninjatech-deployment-lab/actions)
+Built and maintained by [Amir Seyedi](https://www.linkedin.com/in/amirseyedi), a technical
+founder working across agentic AI, enterprise workflows, and regulated decision systems.

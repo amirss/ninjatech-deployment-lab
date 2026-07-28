@@ -1,242 +1,126 @@
-# Roadmap
+# Evidence-gated roadmap
 
-The project grows through explicit milestones. Each milestone adds one new class of production responsibility and keeps the previous guarantees intact.
+This roadmap separates shipped behavior from design work. An item is complete only when its
+code, tests, and runnable evidence are on the default branch.
 
-## Milestone 1 — Production service foundation
+The dates and scope may change. The evidence gate should not.
 
-**Status:** Complete
+## Released foundation
 
-Built:
-
-- typed FastAPI application;
-- configuration validation;
-- structured JSON request logging;
-- request correlation IDs;
-- PostgreSQL connectivity;
-- separate liveness and readiness endpoints;
-- Alembic migrations;
-- Docker and Compose;
-- non-root runtime;
-- CI with formatting, linting, typing, tests, and container smoke checks.
-
-Core lesson:
-
-> A small service should be observable, configurable, testable, and reproducible before it becomes an agent system.
-
-## Milestone 2 — Persistent idempotent task state machine
+### Milestone 1 — Service foundation
 
 **Status:** Complete
 
-Built:
+Evidence:
 
-- persistent tasks;
-- required idempotency keys;
+- typed FastAPI application and validated configuration;
+- separate liveness and database readiness;
+- structured request logging and correlation IDs;
+- explicit Alembic migration path;
+- locked dependencies and non-root container;
+- format, lint, strict-type, unit, PostgreSQL, and container CI.
+
+Review path:
+
+- initial foundation commit;
+- `.github/workflows/ci.yml`;
+- `scripts/container-smoke.sh`.
+
+### Milestone 2 — Persistent task lifecycle
+
+**Status:** Complete in [PR #1](https://github.com/amirss/ninjatech-deployment-lab/pull/1)
+
+Evidence:
+
+- atomic idempotent creation;
 - canonical request fingerprints;
 - database-enforced uniqueness;
 - explicit lifecycle transitions;
-- concurrency-safe approve and cancel operations;
-- PostgreSQL row locking;
-- strict request and response models;
-- migration and concurrency tests.
+- row-locked approval and cancellation;
+- persistence, constraint, replay, and concurrency tests;
+- migration upgrade, downgrade, and re-upgrade.
 
-Core lesson:
+### Milestone 3 — Reliable worker execution
 
-> A client retry must not create duplicate business work.
+**Status:** Complete in [PR #2](https://github.com/amirss/ninjatech-deployment-lab/pull/2)
 
-## Milestone 3 — Reliable worker execution
+Evidence:
 
-**Status:** Complete
-
-Built:
-
-- separate worker process;
-- `FOR UPDATE SKIP LOCKED` claiming;
+- short `SKIP LOCKED` claim transactions;
 - durable numbered attempts;
-- leases and heartbeats;
-- fencing tokens;
-- expired-lease recovery;
-- bounded exponential retry with jitter;
-- timeout policy;
-- cooperative cancellation;
-- graceful shutdown;
+- leases, heartbeats, and execution fencing;
+- expiry recovery;
+- bounded retry with equal jitter;
+- timeout, shutdown, ownership-loss, and cancellation separation;
 - atomic task and attempt finalization;
-- safe diagnostic handler;
-- full PostgreSQL and container smoke coverage.
+- late-handler-return tests;
+- end-to-end success, retry, cancellation, and readiness-degradation proof.
 
-Core lesson:
+Run the current evidence with:
 
-> Long-running autonomous work needs temporary ownership, recovery, and stale-worker protection.
+```bash
+make demo
+```
 
-## Milestone 4 — Enterprise integrations and safe external actions
+## Next validation target
 
-**Status:** In progress
+### Milestone 4 — One bounded enterprise workflow
 
-Scope:
+**Status:** Proposed; not implemented on `main`
 
-- internal service-catalog policy;
-- Jira read integration;
-- GitHub read and bounded comment write;
-- Slack secondary notification;
-- normalized messy-data models;
-- source provenance;
-- business-scoped external-action ledger;
-- provider identity checks;
-- bounded HTTP behavior;
-- ambiguous-write reconciliation;
-- customer discovery, security, acceptance, and rollout artifacts.
+Target workflow:
 
-Internal checkpoints:
+> Given an approved service, Jira issue, GitHub repository, and GitHub issue, produce a
+> source-linked deployment-context decision and, when policy permits, publish one
+> authoritative GitHub comment.
 
-### 4A — Authoritative path
+The detailed [enterprise integration design](Enterprise-Integration-Design) is a proposal,
+not evidence of shipped behavior.
 
-- policy-first access decision;
-- normalized service-catalog, Jira, and GitHub reads;
-- source artifacts;
-- deterministic decision;
-- GitHub comment identity and reconciliation;
-- delayed-provider and ambiguous-write simulation;
-- blocked/no-write paths.
+The milestone will be considered complete only when the repository contains:
 
-### 4B — Secondary delivery
+1. a strict workflow input contract with no arbitrary URLs or credentials;
+2. policy-first access using a configured service catalog;
+3. normalized, bounded Jira and GitHub reads;
+4. immutable source provenance;
+5. a deterministic decision snapshot;
+6. a business-scoped external-action ledger;
+7. GitHub comment identity and bounded reconciliation;
+8. simulator tests for delayed visibility and ambiguous writes;
+9. a container demonstration of ready, blocked, review, replay, and recovery paths;
+10. documentation that distinguishes simulator proof from live-provider proof.
 
-- Slack notification semantics;
-- operational metrics;
-- full customer documents;
-- complete Compose smoke scenarios;
-- optional real-provider sandbox tests.
+Slack notification is secondary. It should not delay the authoritative GitHub path or
+inflate the first implementation.
 
-Core lesson:
+## Subsequent work
 
-> Once a worker changes another system, task retries are not enough. External actions need stable business identity and reconciliation.
+No later milestone is scheduled until Milestone 4 produces working evidence.
 
-## Milestone 5 — Agentic workflow
+The likely sequence is:
 
-**Status:** Planned
+1. **Reasoning layer** — one bounded model call, typed tool contracts, explicit evidence,
+   human escalation, and no merge or deployment authority.
+2. **Evaluations** — representative success cases, missing evidence, conflicting policy,
+   prompt injection, provider failures, false-success checks, repeated-run consistency,
+   latency, and cost.
+3. **Controlled deployment** — authentication, tenancy, managed identities and secrets,
+   environment separation, rollback, retention, and alerts.
+4. **Operator surface** — only the task, evidence, action, and review views required by
+   observed users.
 
-Expected scope:
+These are directions, not current product claims.
 
-- reasoning-model integration;
-- typed tool contracts;
-- bounded planning;
-- repository investigation;
-- explicit evidence collection;
-- human approval and escalation;
-- no merge or production-deployment authority;
-- model-independent control plane.
+## Release gate
 
-The model will operate only through tools whose permissions, idempotency, and failure semantics were established earlier.
+Every milestone must pass four forms of evidence:
 
-Core lesson:
+| Gate | Required proof |
+| --- | --- |
+| Explain | A concise architecture and boundary description |
+| Execute | A deterministic, reproducible happy-path demonstration |
+| Break | Injected failure with observable safe behavior |
+| Modify | One bounded behavior change without losing prior guarantees |
 
-> A model proposes and reasons; the system owns authority, state, and verification.
-
-## Milestone 6 — Evaluations and guardrails
-
-**Status:** Planned
-
-Expected scope:
-
-- representative normal cases;
-- ambiguous requirements;
-- missing data;
-- unauthorized repositories;
-- conflicting instructions;
-- prompt injection in tickets or repository content;
-- tool and provider failures;
-- false-success detection;
-- repeated-run consistency;
-- human-review measurements;
-- cost, latency, and adoption metrics.
-
-Core lesson:
-
-> An agent is not production-ready because a demo succeeded. It needs a defined acceptance contract and failure-oriented evidence.
-
-## Milestone 7 — Cloud deployment
-
-**Status:** Planned
-
-Expected scope:
-
-- AWS deployment;
-- IAM least privilege;
-- managed secrets;
-- environment separation;
-- encrypted storage;
-- network boundaries;
-- CloudWatch logs and metrics;
-- alerts;
-- rollback;
-- backup, retention, and deletion procedures.
-
-Core lesson:
-
-> Deployment is a customer security and operating model, not merely a container running in the cloud.
-
-## Milestone 8 — Lightweight operator interface
-
-**Status:** Planned
-
-Expected scope:
-
-- minimal TypeScript/React interface;
-- task lifecycle;
-- approvals and cancellation;
-- attempts and failure evidence;
-- external-action status;
-- source references;
-- usage and outcome metrics.
-
-This is intentionally an operator surface, not a polished general-purpose product.
-
-## Milestone 9 — Enterprise security package
-
-**Status:** Planned
-
-Expected scope:
-
-- architecture and data-flow diagrams;
-- permission matrix;
-- provider and subprocessor inventory;
-- retention and deletion;
-- incident response;
-- isolation model;
-- prompt-injection controls;
-- sample technical answers for SOC 2 and DPA review;
-- OIDC/SSO demonstration and SCIM design.
-
-Core lesson:
-
-> Enterprise adoption requires evidence that the workflow fits the customer’s identity, data, security, and accountability model.
-
-## Milestone 10 — Forward-deployed delivery package
-
-**Status:** Planned
-
-Expected scope:
-
-- mock customer discovery summary;
-- workflow contract;
-- deployment plan;
-- live demo;
-- architecture and security walkthrough;
-- acceptance report;
-- incident postmortem;
-- adoption analysis;
-- reusable product feedback;
-- second-workflow expansion proposal.
-
-Core lesson:
-
-> An FDE succeeds when the customer adopts, renews, and expands—not when the code merely ships.
-
-## Decision discipline
-
-Every milestone ends with four gates:
-
-1. **Explain** — describe the architecture in plain language.
-2. **Diagnose** — investigate an injected failure from evidence and logs.
-3. **Modify** — make one bounded behavior change without destabilizing prior guarantees.
-4. **Defend** — explain authority, failure, recovery, and customer impact.
-
-The roadmap may change when a real customer problem or platform constraint provides stronger evidence. It should not expand simply because another technology is interesting.
+Documentation may explain intended behavior. Only executable evidence can move a milestone
+to complete.

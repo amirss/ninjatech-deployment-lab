@@ -1,190 +1,193 @@
-# Forward Deployed Engineering Walkthrough
+# Customer delivery walkthrough
 
-This page presents the project as a customer deployment rather than as a collection of backend features.
+This page translates the repository's execution primitives into a bounded customer
+workflow.
 
-## The customer problem
+**Status:** delivery design. The service foundation and worker are implemented on `main`;
+the Jira, GitHub, service-catalog, and Slack connectors described below are not.
 
-A large software company wants autonomous engineering workflows, but its environment is messy:
+## Customer problem
+
+A software company wants to reduce the manual work required to assemble deployment
+context:
 
 - work originates in Jira;
-- service ownership and policy live in an internal catalog;
+- ownership and policy live in an internal service catalog;
 - source and issue context live in GitHub;
-- operators communicate through Slack;
-- security requires tightly scoped identities, complete evidence, and no uncontrolled actions;
+- operators coordinate through Slack;
+- security requires scoped identities and reviewable evidence;
 - retries and process failures must not create duplicate business effects.
 
-The deployment objective is to deliver one narrow workflow safely, prove adoption and reliability, and create a foundation for expansion.
+The first objective is not broad autonomy. It is one narrow workflow with measurable manual
+work displaced and explicit conditions for safe publication.
 
-## Discovery questions
-
-An FDE should begin by understanding the real operation, not by proposing agents immediately.
+## Discovery
 
 ### Workflow
 
 - What event starts the work?
 - Who performs each step today?
-- Which system is authoritative at each step?
-- Where do people copy data manually?
-- Which failures cause delay, rework, or customer risk?
-- What must remain a human decision?
+- Which system is authoritative for each fact?
+- What decision must remain human?
+- Which failures create material delay or customer risk?
 
-### Data
+### Data and authority
 
-- Where does each input live?
-- Which fields are reliable?
+- Where does each required input live?
+- Which fields are reliable enough to drive a decision?
 - How are records versioned?
-- Which data is restricted or regulated?
-- Who can authorize access?
-- What should not be retained?
+- What data is restricted or regulated?
+- Who authorizes repository access and publication?
+- What evidence may be retained, and for how long?
 
-### Success
+### Acceptance
 
 - What measurable outcome should improve?
-- How quickly must the first useful workflow ship?
-- What error is unacceptable?
-- What evidence is required for production approval?
-- What would cause the customer to expand the deployment?
+- What is the maximum acceptable false-publication rate?
+- What evidence is required before production approval?
+- How quickly must the first useful workflow complete?
+- What result should cause the customer to expand or stop the pilot?
 
-## Workflow contract
+## Proposed workflow contract
 
-The first workflow is intentionally bounded:
+> Given one approved service, Jira issue, GitHub repository, and GitHub issue, produce a
+> source-linked deployment-context decision and, when policy permits, publish one
+> authoritative GitHub comment plus an optional Slack notification.
 
-> Given one approved service, Jira issue, GitHub repository, and GitHub issue, produce a source-linked deployment-context decision and, when policy permits, publish one authoritative GitHub comment plus an optional Slack notification.
-
-### Allowed
+Allowed:
 
 - read one configured service record;
 - read one named Jira issue;
 - read one authorized GitHub repository and issue;
 - publish one deterministic GitHub comment;
 - notify one configured Slack channel;
-- retain bounded normalized evidence and audit history.
+- retain bounded normalized evidence and action history.
 
-### Prohibited
+Prohibited:
 
-- arbitrary URLs;
-- arbitrary repository access;
-- code modification;
-- pull-request merge;
+- arbitrary URLs or repositories;
+- code modification or pull-request merge;
 - production deployment;
 - Jira writes;
 - shell execution;
-- arbitrary user-supplied message content;
+- caller-supplied arbitrary message content;
 - external action without current ownership and policy authority.
 
-## Architecture narrative
+## Operational architecture
 
-A concise interview explanation:
+The implemented foundation creates an idempotent task and requires explicit approval.
+PostgreSQL is authoritative for lifecycle state. A separate worker claims due work using
+`SKIP LOCKED`, commits a durable attempt, and executes outside the transaction. Leases and
+heartbeats model temporary ownership; fencing rejects an expired worker after recovery.
 
-> The API creates an idempotent task and requires explicit approval. PostgreSQL is the durable source of truth for lifecycle state. A separate worker claims due work using `SKIP LOCKED`, commits a durable attempt, and executes outside the transaction. Leases and heartbeats model temporary ownership; fencing prevents an expired worker from committing after recovery. Milestone 4 adds a separate external-action ledger because task retries alone cannot prevent duplicate side effects in GitHub or Slack.
+The proposed integration layer adds a separate external-action ledger. Task retries alone
+cannot prove whether GitHub accepted a comment whose response was lost.
 
-## Key design decisions
+## Design decisions
 
-### Why PostgreSQL instead of adding a queue product?
+### Why PostgreSQL rather than a separate queue?
 
-The bounded workload already needs PostgreSQL for durable business state. It provides transactions, uniqueness, row locks, scheduling, and attempt history. Keeping one coordination system reduces operational complexity while preserving correctness. A dedicated queue becomes justified later if throughput, isolation, or delivery patterns exceed this design.
+The bounded workload already requires PostgreSQL for durable business state. Transactions,
+uniqueness, row locking, scheduling, and attempt history cover the current coordination
+needs. A dedicated queue becomes justified when measured throughput, isolation, or delivery
+requirements exceed this design.
 
 ### Why at-least-once rather than exactly-once?
 
-Exactly-once behavior cannot be guaranteed across an internal database and independent external providers without provider-supported idempotency or a distributed transaction. The system instead provides at-least-once task execution, stable external action identity, fencing, reconciliation, and explicit unknown-outcome handling.
+An internal database and an independent provider cannot share a transaction unless the
+provider offers an equivalent contract. The system therefore uses at-least-once task
+execution, stable action identity, fencing, reconciliation, and human review for uncertain
+outcomes.
 
 ### Why is GitHub authoritative and Slack secondary?
 
-The GitHub comment is attached to the engineering work item and can be reconciled through a resource ID and stable marker. Slack is a notification channel whose delivery may be ambiguous. A Slack failure should not erase a confirmed authoritative GitHub outcome.
+The GitHub comment is attached to the engineering work item and can be reconciled by
+provider ID and stable marker. Slack is a notification channel. Its failure must not erase
+or duplicate an authoritative GitHub result.
 
 ### Why check policy before fetching all data?
 
-The customer service catalog defines which repository is approved, the service owner, classification, and publication authority. Checking policy first minimizes data access and avoids retrieving Jira or GitHub content for a workflow that is already unauthorized.
+The service catalog identifies the approved repository, owner, classification, and
+publication authority. Checking it first avoids retrieving customer data for a request that
+is already unauthorized.
 
-### Why no LLM yet?
+## Hard failure case
 
-Reasoning is valuable only after the execution substrate has durable state, permissions, failure recovery, auditability, and safe tool semantics. The project builds those guarantees first so a later model cannot bypass them.
+Scenario:
 
-## How to explain the hardest failure
+1. GitHub accepts a comment.
+2. The response is lost.
+3. The worker crashes before saving the comment ID.
+4. A replacement worker receives the task.
 
-Question:
+Required behavior:
 
-> GitHub creates the comment, but the response is lost and the worker crashes. What happens?
+- preserve an `outcome_unknown` external action;
+- wait for a bounded reconciliation holdoff;
+- look up the stored provider ID when one exists;
+- otherwise scan a bounded, complete comment window for the stable marker;
+- bind exactly one verified match;
+- require human review for multiple matches or incomplete search;
+- never blindly create another comment.
 
-Answer:
+This reduces duplicate risk without making an exactly-once claim.
 
-> The external action remains in an executing or outcome-unknown state. A replacement worker receives a new task fence, waits for the configured reconciliation holdoff, then looks up a stored provider ID or scans bounded issue-comment pages for the stable hidden marker. If it finds one verified comment, it binds to that resource and does not create another. If the search is incomplete or multiple comments match, it stops for human review. The system reduces duplicate risk without claiming an impossible cross-provider exactly-once guarantee.
+## Security boundaries
 
-## Security conversation
+- Provider base URLs come from trusted configuration.
+- Task input cannot contain credentials or arbitrary URLs.
+- Credentials are isolated by connector.
+- Every write requires policy authority and a current execution fence.
+- Logs exclude customer payloads, credentials, tokens, and unsafe exceptions.
+- Source retention is classification-aware and bounded.
+- No code merge, deployment, payment, email, or arbitrary shell authority exists.
+- The workflow remains disabled outside controlled environments until authentication and
+  tenancy are implemented.
 
-A customer CTO or CISO should hear clear boundaries:
+## Pilot measures
 
-- provider base URLs come only from trusted configuration;
-- task input cannot contain credentials or arbitrary URLs;
-- credentials are isolated per connector;
-- all writes require policy authority and current execution ownership;
-- production environments cannot enable the integration workflow before authentication and tenancy exist;
-- logs exclude customer payloads, credentials, tokens, and unsafe exceptions;
-- source retention is classification-aware and minimized;
-- no code merge, deployment, email, payment, or arbitrary shell authority exists.
+The initial deployment should record:
 
-## Adoption metrics
-
-An FDE is accountable for customer outcome, not only deployment completion.
-
-The initial workflow should instrument:
-
-- tasks created and approved;
+- tasks created, approved, blocked, and reviewed;
 - time from approval to decision;
-- decision distribution: ready, blocked, review;
-- provider request latency and failure rate;
-- retries and reconciliations;
-- duplicate actions prevented;
-- human review rate;
-- Slack delivery degradation;
-- active users and repeated use;
-- hours of manual context gathering displaced.
+- provider latency and failure classification;
+- retries, reconciliations, and duplicate actions prevented;
+- false-publication and human-review rates;
+- active and repeated users;
+- manual context-gathering time displaced.
 
-## Rollout plan
+## Rollout
 
-### Phase 1 — Sandbox
+### Sandbox
 
-- simulator providers;
-- synthetic and redacted records;
+- simulator providers and synthetic records;
 - no production credentials;
 - normal, blocked, malformed, retry, cancellation, and ambiguous-write cases.
 
-### Phase 2 — Limited pilot
+### Limited pilot
 
-- one customer service;
-- one approved repository;
-- one small operator group;
+- one service and one approved repository;
+- one operator group;
 - human review for every decision;
-- no automatic GitHub publication until acceptance criteria pass.
+- no automatic publication until acceptance criteria pass.
 
-### Phase 3 — Controlled production
+### Controlled production
 
-- automatic publication only for approved classifications and policies;
+- publication only for approved policies and classifications;
+- authentication, tenancy, managed identities, and credential revocation;
 - monitored error and reconciliation budgets;
-- documented rollback and credential revocation;
-- regular policy and case review.
+- documented rollback, retention, and incident procedures.
 
-## Expansion path
+## Delivery acceptance
 
-After proving deployment-context synchronization, the next adjacent workflow could be incident investigation:
+The workflow is ready to expand only when:
 
-1. receive an approved alert;
-2. collect service ownership, recent deployments, logs, and relevant tickets;
-3. produce a source-linked investigation brief;
-4. open or update a Jira incident;
-5. recommend—but never autonomously execute—a rollback;
-6. route the decision to the on-call owner.
+1. the customer confirms the normalized evidence is sufficient;
+2. blocked paths perform no downstream reads or writes;
+3. repeated execution does not duplicate the GitHub action;
+4. ambiguous writes reconcile or stop for review;
+5. failure evidence is understandable to an operator;
+6. measured manual effort falls without an unacceptable review burden.
 
-This expansion reuses the same execution, evidence, authority, and reconciliation primitives while creating a larger customer footprint.
-
-## What this project proves
-
-The repository is intended to demonstrate that the builder can:
-
-- turn an ambiguous business workflow into a precise contract;
-- design and implement the production substrate;
-- reason about concurrency and distributed failure;
-- integrate external systems safely;
-- communicate architecture to operators, CTOs, and security teams;
-- define measurable adoption and expansion;
-- identify limitations rather than hide them.
+Until executable evidence meets those conditions, this page remains a design contract—not
+a production claim.

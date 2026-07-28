@@ -107,7 +107,9 @@ An external action describes one intended business-side effect in another system
 
 Those are not the same identity.
 
-A task may retry many times while the intended GitHub comment remains one logical action. A separately submitted task may target the same business action. Milestone 4 therefore uses a business-scoped action key rather than relying only on task ID.
+A task may retry many times while the intended GitHub comment remains one logical action. A
+separately submitted task may target the same business action. The proposed Milestone 4
+design therefore specifies a business-scoped action key rather than relying only on task ID.
 
 ## Why fencing is necessary but insufficient
 
