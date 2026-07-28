@@ -6,7 +6,11 @@ from typing import Protocol
 from uuid import UUID
 
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
-from ninjatech_deployment_lab.worker.domain import OwnershipLostError, TaskCancelled
+from ninjatech_deployment_lab.worker.domain import (
+    ExecutionFence,
+    OwnershipLostError,
+    TaskCancelled,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +23,7 @@ class TaskExecution:
     attempt_id: UUID
     attempt_number: int
     max_attempts: int
+    execution_fence: ExecutionFence
 
 
 class HandlerContext:
@@ -43,10 +48,14 @@ class HandlerContext:
 
     def raise_if_cancelled(self) -> None:
         """Raise the correct safe signal at a cooperative checkpoint."""
-        if self._ownership_lost.is_set():
-            raise OwnershipLostError
+        self.raise_if_ownership_lost()
         if self._customer_cancellation.is_set():
             raise TaskCancelled
+
+    def raise_if_ownership_lost(self) -> None:
+        """Block persistence after certain or uncertain execution ownership loss."""
+        if self._ownership_lost.is_set():
+            raise OwnershipLostError
 
     async def sleep(self, seconds: float) -> None:
         """Sleep without delaying cooperative cancellation observation."""

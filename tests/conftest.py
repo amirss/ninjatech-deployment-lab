@@ -9,6 +9,11 @@ from sqlalchemy import delete
 
 from ninjatech_deployment_lab.config import Settings
 from ninjatech_deployment_lab.database import create_database_engine
+from ninjatech_deployment_lab.integrations.model import (
+    ExternalAction,
+    ExternalActionAttempt,
+    SourceArtifact,
+)
 from ninjatech_deployment_lab.tasks.model import Task, TaskAttempt
 
 os.environ.setdefault(
@@ -31,6 +36,9 @@ async def _clear_tasks(database_url: str) -> None:
     engine = create_database_engine(Settings(database_url=database_url, environment="test"))
     try:
         async with engine.begin() as connection:
+            await connection.execute(delete(ExternalActionAttempt))
+            await connection.execute(delete(ExternalAction))
+            await connection.execute(delete(SourceArtifact))
             await connection.execute(delete(TaskAttempt))
             await connection.execute(delete(Task))
     finally:

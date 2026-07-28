@@ -3,12 +3,12 @@
 ## Project scope
 
 This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
-Agent. Milestone 3 adds reliable, single-task worker execution to the persistent and
-idempotent FastAPI/PostgreSQL foundation.
+Agent. Milestone 4A adds one bounded, deterministic enterprise-integration workflow and an
+authoritative GitHub action ledger to the reliable worker foundation.
 
-Do not add LLMs, agent frameworks, external integrations, authentication, frontend work,
-Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS infrastructure unless a later
-milestone explicitly authorizes it.
+Do not add LLMs, agent frameworks, code generation, repository modification, Jira writes,
+authentication, frontend work, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS
+infrastructure unless a later milestone explicitly authorizes it.
 
 ## Engineering rules
 
@@ -35,12 +35,40 @@ milestone explicitly authorizes it.
   credentials, exception messages, or SQL bound parameters.
 - Keep the diagnostic handler disabled by default and impossible to enable in staging or
   production.
+- Keep `deployment_context_sync` disabled by default and impossible to enable in staging or
+  production while task creation and approval are unauthenticated.
+- Require an explicitly configured GitHub principal when `deployment_context_sync` is
+  enabled, and verify returned repository, issue, and Jira identities before any write.
+- Reject GitHub pull requests as issue-comment targets.
+- Treat the service catalog as authority for data access and publication. Stop before Jira
+  or GitHub reads when catalog policy blocks or requires review.
+- Never accept provider base URLs, credentials, or arbitrary publication text from task
+  input.
+- Keep all direct `httpx2` use inside `integrations/http.py`; connectors expose normalized
+  domain values and sanitized errors.
+- Fence every external-action transition with the current task lease and atomically append
+  its exact `external_action_attempts` evidence row.
+- After a confirmed provider write, persist external success through the current fence
+  before honoring customer cancellation; ownership loss must still block persistence.
+- Reserve `outcome_unknown` for writes that may have reached a provider. A failed read-only
+  reconciliation is retryable or permanent, never outcome unknown.
+- Reconcile a known GitHub comment ID before marker search. Never silently recreate a
+  deleted bound comment, write after incomplete pagination, or choose among multiple
+  markers.
+- Store only decision-relevant normalized provenance. Strip query parameters from source
+  URLs and minimize confidential or restricted artifacts.
 - Prefer the smallest production-credible implementation and avoid speculative abstractions.
 
 ## Deferred design
 
 Global idempotency-key uniqueness is temporary because this milestone has no authenticated
 tenant. When tenancy is introduced, idempotency uniqueness must become tenant-scoped.
+
+The deployment action scope, provider credentials, repository/service allowlists, source
+retention, and external-action uniqueness are also temporarily deployment-global. They
+must all become tenant-scoped when authentication and tenancy are introduced. Personal
+tokens must move to customer-installed GitHub Apps, Jira OAuth identities, and managed
+secret storage.
 
 ## Task lifecycle
 
@@ -74,6 +102,21 @@ tenant. When tenancy is introduced, idempotency uniqueness must become tenant-sc
   require separate idempotency and outcome reconciliation.
 - `task_attempts` is durable audit evidence; prior attempts are never overwritten.
 
+## External action guarantees
+
+- Task identity describes one execution request; `action_scope_key` describes one stable
+  customer business side effect across independent tasks and retries.
+- A decision snapshot binds workflow version, policy version, normalized decision, and
+  stable source versions/content hashes before action reservation.
+- Same scope and same desired fingerprint replay. Changed content requires a controlled
+  revision or human review.
+- Write timeouts, connection loss after send, malformed or oversized 2xx responses, and
+  ambiguous server failures require reconciliation before reissue.
+- `write_started_at` plus `reconcile_not_before` prevents a replacement worker from creating
+  immediately after one negative lookup while provider consistency may still be settling.
+- An action ledger and fencing prevent duplicate database transitions; they cannot undo an
+  external effect or prove provider-level exactly-once behavior.
+
 ## Commands
 
 - `make install`: install locked development dependencies.
@@ -86,7 +129,9 @@ tenant. When tenancy is introduced, idempotency uniqueness must become tenant-sc
 - `make check`: run all non-mutating quality checks.
 - `make migrate`: apply Alembic migrations.
 - `make container-smoke`: migrate and exercise the API, PostgreSQL, and explicitly enabled
-  diagnostic worker, including success, retry, cancellation, and readiness degradation.
+  diagnostic/integration workers and test-only simulator, including policy-first access,
+  authoritative-action replay, ambiguous-write reconciliation, delayed acceptance, and
+  readiness degradation.
 
 <!-- codebase-memory-mcp:start -->
 # Codebase Knowledge Graph (codebase-memory-mcp)

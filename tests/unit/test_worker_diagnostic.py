@@ -10,7 +10,11 @@ from ninjatech_deployment_lab.worker.diagnostic import (
     DiagnosticHandler,
     diagnostic_input_adapter,
 )
-from ninjatech_deployment_lab.worker.domain import PermanentTaskError, RetryableTaskError
+from ninjatech_deployment_lab.worker.domain import (
+    ExecutionFence,
+    PermanentTaskError,
+    RetryableTaskError,
+)
 from ninjatech_deployment_lab.worker.handlers import HandlerContext, TaskExecution
 
 
@@ -26,13 +30,22 @@ def _context() -> HandlerContext:
 
 
 def _task(task_input: dict[str, object], *, attempt_number: int = 1) -> TaskExecution:
+    task_id = uuid4()
+    attempt_id = uuid4()
     return TaskExecution(
-        task_id=uuid4(),
+        task_id=task_id,
         task_type="diagnostic",
         task_input=task_input,  # type: ignore[arg-type]
-        attempt_id=uuid4(),
+        attempt_id=attempt_id,
         attempt_number=attempt_number,
         max_attempts=3,
+        execution_fence=ExecutionFence(
+            task_id=task_id,
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
+            worker_id="unit-worker",
+            lease_token_hash="a" * 64,
+        ),
     )
 
 

@@ -46,3 +46,48 @@ def test_diagnostic_handler_cannot_be_enabled_outside_dev_or_test(
                 "enable_diagnostic_handler": True,
             }
         )
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployment_workflow_cannot_be_enabled_without_authentication(
+    environment: str,
+) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="cannot be enabled in staging or production",
+    ):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@localhost/database",
+            environment=environment,
+            enable_deployment_context_sync=True,
+            deployment_scope_id="unsafe",
+            deployment_allowed_service_ids=("service",),
+            deployment_allowed_github_repositories=("owner/repository",),
+            deployment_allowed_jira_projects=("ENG",),
+        )
+
+
+def test_deployment_workflow_requires_trusted_scope_configuration() -> None:
+    with pytest.raises(ValidationError, match="deployment_scope_id is required"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@localhost/database",
+            environment="test",
+            enable_deployment_context_sync=True,
+        )
+
+
+@pytest.mark.parametrize("expected_login", [None, "   "])
+def test_deployment_workflow_requires_expected_github_principal(
+    expected_login: str | None,
+) -> None:
+    with pytest.raises(ValidationError, match="github_expected_login is required"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@localhost/database",
+            environment="test",
+            enable_deployment_context_sync=True,
+            deployment_scope_id="controlled-sandbox",
+            deployment_allowed_service_ids=("service",),
+            deployment_allowed_github_repositories=("owner/repository",),
+            deployment_allowed_jira_projects=("ENG",),
+            github_expected_login=expected_login,
+        )
