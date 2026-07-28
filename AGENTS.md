@@ -3,8 +3,9 @@
 ## Project scope
 
 This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
-Agent. Milestone 4A adds one bounded, deterministic enterprise-integration workflow and an
-authoritative GitHub action ledger to the reliable worker foundation.
+Agent. Milestone 4 adds one bounded, deterministic enterprise-integration workflow, an
+authoritative GitHub action ledger, and optional secondary Slack evidence to the reliable
+worker foundation.
 
 Do not add LLMs, agent frameworks, code generation, repository modification, Jira writes,
 authentication, frontend work, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS
@@ -116,6 +117,24 @@ secret storage.
   immediately after one negative lookup while provider consistency may still be settling.
 - An action ledger and fencing prevent duplicate database transitions; they cannot undo an
   external effect or prove provider-level exactly-once behavior.
+- Keep GitHub authoritative and Slack secondary. A Slack failure must never erase or reverse
+  a confirmed GitHub result.
+- Validate Slack feature enablement and the channel allowlist before catalog or provider
+  access. Do not construct the Slack connector for tasks that do not request notification.
+- Authorize Slack only with exact configured team, bot-user, and optional bot IDs from
+  `auth.test`; names are diagnostic only.
+- Render one bounded deterministic top-level Slack message with unfurling disabled. Never
+  accept caller-supplied message text, Blocks, metadata, or arbitrary URLs.
+- Scope Slack actions to trusted deployment, GitHub revision, service, and channel values;
+  never use task, attempt, worker, lease, or random IDs as business identity.
+- Persist confirmed Slack success before honoring customer cancellation. Ownership loss
+  still blocks every stale transition.
+- Never automatically resend a Slack `outcome_unknown` action. This checkpoint deliberately
+  has no Slack-history reconciliation scope.
+- Keep metric labels within typed low-cardinality enums. Task, repository, issue, service,
+  channel, resource, customer, URL, and error-message values are forbidden labels.
+- Metrics are process-local/log-oriented in this checkpoint; do not add a public endpoint or
+  claim durable aggregation.
 
 ## Commands
 
@@ -126,12 +145,26 @@ secret storage.
 - `make lint`: run Ruff lint checks.
 - `make typecheck`: run strict mypy checks.
 - `make test`: run pytest.
+- `make sandbox-test`: run explicitly gated real-provider sandbox tests; these normally skip.
 - `make check`: run all non-mutating quality checks.
 - `make migrate`: apply Alembic migrations.
 - `make container-smoke`: migrate and exercise the API, PostgreSQL, and explicitly enabled
   diagnostic/integration workers and test-only simulator, including policy-first access,
   authoritative-action replay, ambiguous-write reconciliation, delayed acceptance, and
-  readiness degradation.
+  secondary Slack success/degradation, readiness degradation, and cleanup.
+
+## Production boundary
+
+The integration and Slack handlers remain disabled in staging and production because the
+public task API has no authentication or tenancy. Future idempotency keys, credentials,
+action scopes, allowlists, metric routing, and retention rules must be tenant-scoped before
+production enablement. GitHub personal tokens should become installation tokens, Jira
+tokens should become OAuth identities, Slack bot installation should be customer-owned,
+and secrets should move to managed storage.
+
+The `customer/` documents describe fictional Northstar Payments. Do not present them as a
+real NinjaTech engagement, certification, or completed production deployment. Do not update
+the GitHub Wiki from the Checkpoint 4B branch.
 
 <!-- codebase-memory-mcp:start -->
 # Codebase Knowledge Graph (codebase-memory-mcp)

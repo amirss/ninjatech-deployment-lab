@@ -1,8 +1,10 @@
 # NinjaTech Deployment Lab
 
 NinjaTech Deployment Lab is an incremental, production-oriented deployment engineering
-project. Milestone 4A adds one disabled-by-default, deterministic
+project. Milestone 4 adds one disabled-by-default, deterministic
 `deployment_context_sync` workflow to the persistent task and reliable-worker foundation.
+Checkpoint 4B keeps GitHub authoritative while adding optional secondary Slack delivery,
+process-local operational metrics, and a fictional customer deployment package.
 
 PostgreSQL remains the only queue and coordination system. There is no LLM, agent
 framework, authentication, frontend, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or
@@ -33,6 +35,9 @@ The application is one stateless ASGI service:
 - The deployment-context handler checks the internal service catalog before retrieving Jira
   or GitHub data, stores minimized immutable provenance, and uses a fenced external-action
   ledger before creating or updating one bounded GitHub issue comment.
+- After that GitHub action is confirmed, an explicitly requested and allowlisted Slack
+  notification uses a separate business action and records degraded delivery without
+  changing the authoritative result.
 
 ## Prerequisites
 
@@ -85,10 +90,22 @@ The worker uses the same non-root application image. It can also be run directly
 make run-worker
 ```
 
+The `simulator` service is available only through the Compose `integration` profile for
+tests and demos:
+
+```bash
+docker compose --profile integration up --build
+```
+
+It provides fake catalog, Jira, GitHub, and Slack contracts and is rejected by its own
+startup guard in staging or production. It is not a production dependency.
+
 The deterministic `diagnostic` handler and the `deployment_context_sync` integration
 handler are disabled by default. Because task creation and approval are still
 unauthenticated, settings reject the integration handler in staging and production. It may
-be enabled only in development, test, demo, or a deliberately controlled sandbox.
+be enabled only in development, test, demo, or a deliberately controlled sandbox. Slack is
+also disabled by default and cannot be enabled unless the workflow, expected workspace and
+bot-user IDs, an allowed channel, and exactly one credential source are configured.
 
 ## Endpoints
 
@@ -233,7 +250,7 @@ effect performed before a crash. Future external tools must use their own idempo
 bounded calls, outcome verification, and reconciliation; exactly-once execution cannot be
 promised across independent systems.
 
-## Deployment-context workflow (Checkpoint 4A)
+## Deployment-context workflow
 
 The strict task input is:
 
@@ -245,7 +262,8 @@ The strict task input is:
     "github_repository": "customer/example-service",
     "github_issue_number": 42,
     "service_id": "payments-api",
-    "publish_slack_notification": false
+    "publish_slack_notification": true,
+    "slack_channel_id": "C1234567890"
   }
 }
 ```
@@ -299,6 +317,33 @@ record, but it cannot undo an effect already accepted by GitHub. Provider-level
 exactly-once creation is therefore not mathematically guaranteed; reconciliation reduces
 duplicates and converts uncertainty into human review.
 
+### Secondary Slack delivery
+
+GitHub is the authoritative business action. Slack is a secondary notification and begins
+only after the GitHub action is confirmed. The connector calls `auth.test` and compares
+opaque team, bot-user, and optional bot IDs exactly against trusted settings. Display names
+never authorize a write. The requested channel must be allowlisted before service-catalog
+or provider access, and message text is rendered from a fixed bounded template rather than
+accepted from the caller.
+
+The Slack action scope includes the deployment scope, GitHub repository and issue, canonical
+service, confirmed GitHub revision, and channel. It excludes task, attempt, worker, and lease
+identifiers. Independent tasks for the same GitHub revision and channel therefore reuse one
+notification action; a new GitHub revision or different channel creates a distinct intent.
+
+The persisted delivery state is one of `not_requested`, `succeeded`,
+`retryable_failure`, `outcome_unknown`, `permanent_failure`, or
+`needs_human_review`. A known pre-transmission failure may be retried by a later authorized
+task. An ambiguous write—such as a response lost after transmission or a malformed 2xx
+response—is `outcome_unknown` and is never automatically resent because this checkpoint
+does not request Slack history scopes or pretend it can reconcile delivery. Slack failure
+does not erase, reverse, or misrepresent confirmed GitHub success.
+
+Cancellation before the Slack write prevents it. If Slack confirms success while customer
+cancellation is in flight, the fenced action ledger records provider truth before the task
+honors cancellation. Ownership loss is different: a stale worker cannot persist success,
+and a replacement does not post again.
+
 ## Configuration
 
 All application variables use the `NINJATECH_` prefix:
@@ -329,6 +374,16 @@ All application variables use the `NINJATECH_` prefix:
 | `NINJATECH_JIRA_BASE_URL` | When enabled | Local simulator URL | Trusted Jira endpoint |
 | `NINJATECH_GITHUB_BASE_URL` | When enabled | Local simulator URL | Trusted GitHub endpoint |
 | `NINJATECH_GITHUB_EXPECTED_LOGIN` | When enabled | None | Expected GitHub principal, compared case-insensitively |
+| `NINJATECH_ENABLE_SLACK_NOTIFICATION` | No | `false` | Enables controlled secondary Slack delivery |
+| `NINJATECH_SLACK_BASE_URL` | When Slack enabled | Local simulator URL | Trusted Slack API base URL |
+| `NINJATECH_SLACK_BOT_TOKEN` | One credential source | None | Slack bot token from the environment |
+| `NINJATECH_SLACK_BOT_TOKEN_FILE` | One credential source | None | Absolute mounted Slack token-file path |
+| `NINJATECH_SLACK_EXPECTED_TEAM_ID` | When Slack enabled | None | Exact expected Slack workspace ID |
+| `NINJATECH_SLACK_EXPECTED_USER_ID` | When Slack enabled | None | Exact expected Slack bot-user ID |
+| `NINJATECH_SLACK_EXPECTED_BOT_ID` | No | None | Exact expected Slack bot ID when configured |
+| `NINJATECH_DEPLOYMENT_ALLOWED_SLACK_CHANNELS` | When Slack enabled | `[]` | JSON list of allowed channel IDs |
+| `NINJATECH_SLACK_MAX_TEXT_CHARS` | No | `1000` | Maximum rendered notification characters |
+| `NINJATECH_SLACK_WRITE_TIMEOUT_SECONDS` | No | `5.0` | Bounded Slack write duration |
 | `NINJATECH_INTEGRATION_PROVIDER_WRITE_TIMEOUT_SECONDS` | No | `8.0` | Bounded provider write duration |
 | `NINJATECH_INTEGRATION_SETTLEMENT_DELAY_SECONDS` | No | `3.0` | Holdoff before ambiguous-write reconciliation |
 
@@ -347,6 +402,14 @@ exception messages, authorization headers, and SQL bound parameters are excluded
 events correlate execution with the public-safe `attempt_id`. Heartbeats are DEBUG-level to
 avoid routine INFO log noise.
 
+Operational metrics use a typed, low-cardinality sink. Provider, operation, outcome,
+decision, action status, and Slack delivery state are allowed labels. Task IDs, repository
+names, issue numbers, service IDs, channel IDs, resource IDs, URLs, and error messages are
+forbidden metric labels. The default sink emits allowlisted structured metric events;
+in-memory counters are available for tests. Metrics are process-local/log-oriented and
+reset after restart—this checkpoint does not add a metrics service or public metrics
+endpoint.
+
 ## Quality commands
 
 ```bash
@@ -355,8 +418,36 @@ make format-check  # Check formatting without changing files
 make lint          # Run Ruff lint rules
 make typecheck     # Run strict mypy checks
 make test          # Run unit and integration-style tests
+make sandbox-test  # Run opt-in real-provider sandbox tests (normally skipped)
 make check         # Run all non-mutating checks
 ```
+
+Ordinary CI excludes the `sandbox` marker and runs Ruff formatting, Ruff lint, strict mypy,
+the Alembic round trip, and all PostgreSQL tests. Container smoke builds the non-root image,
+starts PostgreSQL, API, worker, and the development/test-only provider simulator, then
+proves GitHub-plus-Slack success, independent replay, unknown-outcome no-resend, permanent
+Slack degradation, policy-blocked zero-access, readiness failure, and guaranteed cleanup.
+
+Real-provider tests require `NINJATECH_RUN_SANDBOX_TESTS=true`, the explicit ownership
+confirmation `NINJATECH_SANDBOX_OWNER_CONFIRMATION=amirss`, and Amir-controlled resources.
+Writes additionally require `NINJATECH_RUN_SANDBOX_WRITES=true`. A write run creates a
+distinctively marked GitHub comment and Slack message that require manual cleanup; no
+credentials are printed.
+
+## Customer deployment package
+
+The [customer](customer/) directory contains six concise artifacts for the fictional
+customer **Northstar Payments**:
+
+1. [Discovery notes](customer/01_discovery_notes.md)
+2. [Workflow contract](customer/02_workflow_contract.md)
+3. [Integration and data map](customer/03_integration_and_data_map.md)
+4. [Security and permissions](customer/04_security_and_permissions.md)
+5. [Acceptance criteria](customer/05_acceptance_criteria.md)
+6. [Rollout and rollback plan](customer/06_rollout_and_rollback_plan.md)
+
+They are deployment examples, not a claim of a real NinjaTech or customer engagement.
+The GitHub Wiki is intentionally not updated on this branch.
 
 The real PostgreSQL readiness, persistence, constraint, and concurrency tests skip when
 `NINJATECH_TEST_DATABASE_URL` is absent. GitHub Actions provides PostgreSQL and always
@@ -367,16 +458,18 @@ executes them.
 GitHub Actions has two independent jobs:
 
 - The quality job checks Ruff formatting and linting, runs strict mypy, verifies an Alembic
-  upgrade/downgrade/re-upgrade cycle, and runs all pytest tests including live PostgreSQL
-  readiness, task persistence, idempotency, worker leases, fencing, recovery, constraints,
-  atomic attempt history, and concurrency coverage.
+  upgrade/downgrade/re-upgrade cycle, and runs all non-sandbox pytest tests including live
+  PostgreSQL readiness, task persistence, idempotency, worker leases, fencing, recovery,
+  constraints, atomic attempt history, and concurrency coverage.
 - The container smoke job validates the Compose configuration, builds the application image,
   confirms its runtime user is non-root, waits for PostgreSQL, explicitly applies migrations,
   starts the API and diagnostic worker, checks `/health` and `/ready`, executes success,
-  retry-then-success, and cooperative-cancellation tasks. Checkpoint 4A also starts the
+  retry-then-success, and cooperative-cancellation tasks. Milestone 4 also starts the
   test/demo-only provider simulator, proves policy-first short-circuiting, creates and
   replays one authoritative GitHub comment, reconciles an ambiguous successful write, and
   verifies delayed acceptance across task lease expiry does not create a duplicate.
+  Checkpoint 4B additionally proves Slack success, independent replay, unknown-outcome
+  no-resend, permanent Slack degradation without GitHub loss, and blocked zero-access.
 
 The smoke job then stops PostgreSQL while leaving the API running. `/health` must remain
 `200` because it reports process liveness, while `/ready` must become `503` because the
@@ -416,3 +509,4 @@ migration inserts fake data.
 `0004_enterprise_integrations` adds immutable `source_artifacts`, business-scoped
 `external_actions`, and append-only `external_action_attempts`. Its only indexes support
 task evidence lookup and ordered action history; it inserts no customer or simulator data.
+Checkpoint 4B reuses those provider-neutral tables, so no `0005` migration is required.
