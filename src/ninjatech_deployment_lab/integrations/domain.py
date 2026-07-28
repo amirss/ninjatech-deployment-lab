@@ -171,11 +171,47 @@ class ExternalActionReference(StrictModel):
     provider_url: str | None = None
 
 
+class SlackDeliveryState(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    SUCCEEDED = "succeeded"
+    RETRYABLE_FAILURE = "retryable_failure"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    PERMANENT_FAILURE = "permanent_failure"
+    NEEDS_HUMAN_REVIEW = "needs_human_review"
+
+
+class SlackNotificationResult(StrictModel):
+    requested: bool
+    state: SlackDeliveryState
+    action: ExternalActionReference | None = None
+    safe_error_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,100}$")
+
+    @model_validator(mode="after")
+    def validate_state_evidence(self) -> SlackNotificationResult:
+        if self.state is SlackDeliveryState.NOT_REQUESTED:
+            if self.requested or self.action is not None or self.safe_error_code is not None:
+                raise ValueError("not-requested Slack delivery cannot contain action evidence")
+        elif not self.requested:
+            raise ValueError("requested must be true for a Slack delivery outcome")
+        if self.state is SlackDeliveryState.SUCCEEDED:
+            if self.action is None or self.action.provider_resource_identifier is None:
+                raise ValueError("successful Slack delivery requires provider evidence")
+            if self.safe_error_code is not None:
+                raise ValueError("successful Slack delivery cannot contain an error")
+        return self
+
+
 class DeploymentContextResult(StrictModel):
     workflow_version: str = WORKFLOW_VERSION
     decision: DeploymentContextDecision
     source_artifacts: tuple[SourceReference, ...]
     authoritative_github_action: ExternalActionReference | None = None
+    secondary_slack_notification: SlackNotificationResult = Field(
+        default_factory=lambda: SlackNotificationResult(
+            requested=False,
+            state=SlackDeliveryState.NOT_REQUESTED,
+        )
+    )
 
 
 def canonical_json(value: object) -> bytes:

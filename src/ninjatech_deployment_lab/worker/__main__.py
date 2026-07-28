@@ -15,9 +15,14 @@ from ninjatech_deployment_lab.integrations.connectors import (
 )
 from ninjatech_deployment_lab.integrations.credentials import EnvironmentOrFileCredential
 from ninjatech_deployment_lab.integrations.http import IntegrationHttpClient
+from ninjatech_deployment_lab.integrations.metrics import StructuredLoggingMetricsSink
 from ninjatech_deployment_lab.integrations.persistence import (
     ExternalActionRepository,
     SourceArtifactRepository,
+)
+from ninjatech_deployment_lab.integrations.slack import (
+    SlackClient,
+    SlackDeliveryService,
 )
 from ninjatech_deployment_lab.integrations.workflow import DeploymentContextSyncHandler
 from ninjatech_deployment_lab.observability import configure_logging
@@ -41,7 +46,9 @@ async def async_main() -> None:
     if settings.enable_diagnostic_handler:
         registry.register("diagnostic", DiagnosticHandler())
     if settings.enable_deployment_context_sync:
-        integration_http = IntegrationHttpClient(settings)
+        metrics = StructuredLoggingMetricsSink()
+        integration_http = IntegrationHttpClient(settings, metrics=metrics)
+        action_repository = ExternalActionRepository(session_factory, metrics=metrics)
         service_catalog_credential = EnvironmentOrFileCredential(
             value=settings.service_catalog_token,
             path=settings.service_catalog_token_file,
@@ -54,6 +61,26 @@ async def async_main() -> None:
             value=settings.github_token,
             path=settings.github_token_file,
         )
+
+        def build_slack_delivery() -> SlackDeliveryService:
+            if integration_http is None:
+                raise RuntimeError("integration HTTP client is not configured")
+            slack_credential = EnvironmentOrFileCredential(
+                value=settings.slack_bot_token,
+                path=settings.slack_bot_token_file,
+            )
+            return SlackDeliveryService(
+                settings=settings,
+                notifier=SlackClient(
+                    http=integration_http,
+                    base_url=settings.slack_base_url,
+                    credential=slack_credential,
+                    settings=settings,
+                ),
+                actions=action_repository,
+                metrics=metrics,
+            )
+
         registry.register(
             "deployment_context_sync",
             DeploymentContextSyncHandler(
@@ -80,7 +107,11 @@ async def async_main() -> None:
                     session_factory,
                     maximum_bytes=settings.source_artifact_max_bytes,
                 ),
-                actions=ExternalActionRepository(session_factory),
+                actions=action_repository,
+                metrics=metrics,
+                slack_delivery_factory=(
+                    build_slack_delivery if settings.enable_slack_notification else None
+                ),
             ),
         )
 

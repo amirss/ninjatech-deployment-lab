@@ -34,6 +34,30 @@ class ExternalActionStatus(StrEnum):
     NEEDS_HUMAN_REVIEW = "needs_human_review"
 
 
+class ExternalActionProvider(StrEnum):
+    GITHUB = "github"
+    SLACK = "slack"
+
+
+class ExternalActionOperation(StrEnum):
+    UPSERT_DEPLOYMENT_CONTEXT_COMMENT = "upsert_deployment_context_comment"
+    POST_DEPLOYMENT_CONTEXT_NOTIFICATION = "post_deployment_context_notification"
+
+
+SUPPORTED_EXTERNAL_ACTIONS = frozenset(
+    {
+        (
+            ExternalActionProvider.GITHUB,
+            ExternalActionOperation.UPSERT_DEPLOYMENT_CONTEXT_COMMENT,
+        ),
+        (
+            ExternalActionProvider.SLACK,
+            ExternalActionOperation.POST_DEPLOYMENT_CONTEXT_NOTIFICATION,
+        ),
+    }
+)
+
+
 class SourceArtifact(Base):
     """Immutable minimized evidence observed by one task attempt."""
 

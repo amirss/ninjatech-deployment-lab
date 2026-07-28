@@ -25,6 +25,7 @@ from ninjatech_deployment_lab.integrations.http import (
     ProviderContractError,
     RetryableHttpError,
 )
+from ninjatech_deployment_lab.integrations.metrics import MetricOperation, MetricProvider
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
 
 
@@ -176,6 +177,8 @@ class ServiceCatalogClient(_BaseConnector):
                 path=f"services?service_id={quote(service_id, safe='')}",
                 headers=self._bearer_headers(),
                 correlation_id=correlation_id,
+                provider=MetricProvider.SERVICE_CATALOG,
+                operation=MetricOperation.READ,
             )
         except RetryableHttpError:
             raise RetryableProviderError("service_catalog_unavailable") from None
@@ -222,6 +225,8 @@ class JiraClient(_BaseConnector):
                 path=f"rest/api/3/issue/{quote(issue_key, safe='')}",
                 headers=self._jira_headers(),
                 correlation_id=correlation_id,
+                provider=MetricProvider.JIRA,
+                operation=MetricOperation.READ,
             )
         except RetryableHttpError:
             raise RetryableProviderError("jira_unavailable") from None
@@ -279,7 +284,11 @@ class GitHubClient(_BaseConnector):
 
     async def verify_identity(self, *, correlation_id: str) -> bool:
         """Verify the configured GitHub login using case-insensitive username semantics."""
-        response = await self._read("user", correlation_id=correlation_id)
+        response = await self._read(
+            "user",
+            correlation_id=correlation_id,
+            operation=MetricOperation.IDENTITY,
+        )
         try:
             payload = _object_payload(response.payload)
             login = _required_string(payload, "login")
@@ -349,6 +358,7 @@ class GitHubClient(_BaseConnector):
                 f"repos/{_repository_path(repository)}/issues/comments/"
                 f"{quote(comment_id, safe='')}",
                 correlation_id=correlation_id,
+                operation=MetricOperation.RECONCILIATION,
             )
         except ProviderNotFoundError:
             return None
@@ -370,6 +380,7 @@ class GitHubClient(_BaseConnector):
                 f"repos/{_repository_path(repository)}/issues/{issue_number}/comments"
                 f"?per_page=100&page={page}",
                 correlation_id=correlation_id,
+                operation=MetricOperation.RECONCILIATION,
             )
             if not isinstance(response.payload, list):
                 raise PermanentProviderError("github_contract_error")
@@ -417,7 +428,13 @@ class GitHubClient(_BaseConnector):
         )
         return _normalize_comment(response.payload, ambiguous_on_failure=True)
 
-    async def _read(self, path: str, *, correlation_id: str) -> JsonHttpResponse:
+    async def _read(
+        self,
+        path: str,
+        *,
+        correlation_id: str,
+        operation: MetricOperation = MetricOperation.READ,
+    ) -> JsonHttpResponse:
         try:
             response = await self._http.request_json(
                 method="GET",
@@ -425,6 +442,8 @@ class GitHubClient(_BaseConnector):
                 path=path,
                 headers=self._github_headers(),
                 correlation_id=correlation_id,
+                provider=MetricProvider.GITHUB,
+                operation=operation,
             )
         except RetryableHttpError:
             raise RetryableProviderError("github_unavailable") from None
@@ -451,6 +470,8 @@ class GitHubClient(_BaseConnector):
                 correlation_id=correlation_id,
                 write=True,
                 timeout_seconds=self._write_timeout,
+                provider=MetricProvider.GITHUB,
+                operation=MetricOperation.WRITE,
             )
         except AmbiguousWriteError:
             raise ProviderWriteOutcomeUnknown("github_write_outcome_unknown") from None

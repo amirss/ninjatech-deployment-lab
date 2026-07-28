@@ -67,7 +67,7 @@ jobs:
           uv run alembic upgrade head
 
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -m "not sandbox"
 
   container-smoke:
     name: API and worker container smoke test

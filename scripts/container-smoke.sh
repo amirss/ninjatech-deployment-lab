@@ -36,6 +36,15 @@ export NINJATECH_SERVICE_CATALOG_BASE_URL="http://simulator:8090/catalog"
 export NINJATECH_JIRA_BASE_URL="http://simulator:8090/jira"
 export NINJATECH_GITHUB_BASE_URL="http://simulator:8090/github"
 export NINJATECH_GITHUB_EXPECTED_LOGIN="simulator-bot"
+export NINJATECH_ENABLE_SLACK_NOTIFICATION="true"
+export NINJATECH_SLACK_BASE_URL="http://simulator:8090/slack"
+export NINJATECH_SLACK_BOT_TOKEN="smoke-slack-credential"
+export NINJATECH_SLACK_EXPECTED_TEAM_ID="T1234567890"
+export NINJATECH_SLACK_EXPECTED_USER_ID="U1234567890"
+export NINJATECH_SLACK_EXPECTED_BOT_ID="B1234567890"
+export NINJATECH_DEPLOYMENT_ALLOWED_SLACK_CHANNELS='["C1234567890","CUNKNOWN001","CPERMFAIL01","CDELAYED001","CRATELIMIT1"]'
+export NINJATECH_SLACK_MAX_TEXT_CHARS="1000"
+export NINJATECH_SLACK_WRITE_TIMEOUT_SECONDS="1.0"
 export NINJATECH_SERVICE_CATALOG_TOKEN="smoke-catalog-credential"
 export NINJATECH_JIRA_API_TOKEN="smoke-jira-credential"
 export NINJATECH_GITHUB_TOKEN="smoke-github-credential"
@@ -43,6 +52,7 @@ export NINJATECH_INTEGRATION_PROVIDER_WRITE_TIMEOUT_SECONDS="1.0"
 export NINJATECH_INTEGRATION_SETTLEMENT_DELAY_SECONDS="3.0"
 export SIMULATOR_ACCEPT_DELAY_SECONDS="2.0"
 export SIMULATOR_DELAYED_RESPONSE_SECONDS="10.0"
+export SIMULATOR_SLACK_RESPONSE_DELAY_SECONDS="10.0"
 
 api_url="http://127.0.0.1:${APP_PORT}"
 simulator_url="http://127.0.0.1:${SIMULATOR_PORT}"
@@ -279,10 +289,11 @@ wait_for_task_status "${cancellation_task_id}" "running"
 cancel_running_task "${cancellation_task_id}"
 wait_for_task_status "${cancellation_task_id}" "cancelled"
 
-ready_input='{"jira_issue_key":"ENG-123","github_repository":"customer/example-service","github_issue_number":42,"service_id":"payments-api","publish_slack_notification":false}'
+ready_input='{"jira_issue_key":"ENG-123","github_repository":"customer/example-service","github_issue_number":42,"service_id":"payments-api","publish_slack_notification":true,"slack_channel_id":"C1234567890"}'
 
-announce "Executing the authoritative deployment-context GitHub workflow"
+announce "Executing authoritative GitHub plus secondary Slack success"
 github_create_before="$(simulator_evidence_field "create_calls")"
+slack_message_before="$(simulator_evidence_field "slack_message_count")"
 deployment_task_id="$(
     create_task \
         "smoke-deployment-${GITHUB_RUN_ID:-local}" \
@@ -296,13 +307,22 @@ if [[ $((github_create_after - github_create_before)) -ne 1 ]]; then
     printf 'Authoritative workflow did not create exactly one GitHub comment\n' >&2
     exit 1
 fi
+slack_message_after="$(simulator_evidence_field "slack_message_count")"
+if [[ $((slack_message_after - slack_message_before)) -ne 1 ]]; then
+    printf 'Secondary workflow did not create exactly one Slack message\n' >&2
+    exit 1
+fi
 
 deployment_response="$(curl --silent --show-error "${api_url}/tasks/${deployment_task_id}")"
 python3 -c \
     'import json, sys
 task = json.loads(sys.argv[1])
 assert task["result"]["decision"]["outcome"] == "ready"
-assert task["result"]["authoritative_github_action"]["provider"] == "github"' \
+assert task["result"]["authoritative_github_action"]["provider"] == "github"
+slack = task["result"]["secondary_slack_notification"]
+assert slack["state"] == "succeeded"
+assert slack["action"]["provider"] == "slack"
+assert slack["action"]["provider_resource_identifier"]' \
     "${deployment_response}"
 
 announce "Re-submitting the same business action scope without duplicating the comment"
@@ -318,6 +338,64 @@ if [[ "$(simulator_evidence_field "create_calls")" -ne "${github_create_after}" 
     printf 'Independent task created a duplicate authoritative GitHub comment\n' >&2
     exit 1
 fi
+if [[ "$(simulator_evidence_field "slack_message_count")" -ne "${slack_message_after}" ]]; then
+    printf 'Independent task created a duplicate Slack notification\n' >&2
+    exit 1
+fi
+
+announce "Preserving GitHub success when Slack acceptance is ambiguous"
+slack_unknown_before="$(simulator_evidence_field "slack_message_count")"
+slack_unknown_task_id="$(
+    create_task \
+        "smoke-slack-unknown-${GITHUB_RUN_ID:-local}" \
+        "deployment_context_sync" \
+        '{"jira_issue_key":"ENG-124","github_repository":"customer/example-service","github_issue_number":43,"service_id":"payments-api","publish_slack_notification":true,"slack_channel_id":"CUNKNOWN001"}'
+)"
+approve_task "${slack_unknown_task_id}"
+wait_for_task_status "${slack_unknown_task_id}" "succeeded"
+slack_unknown_response="$(curl --silent --show-error "${api_url}/tasks/${slack_unknown_task_id}")"
+python3 -c \
+    'import json, sys
+task = json.loads(sys.argv[1])
+assert task["result"]["authoritative_github_action"]["provider_resource_identifier"]
+assert task["result"]["secondary_slack_notification"]["state"] == "outcome_unknown"' \
+    "${slack_unknown_response}"
+slack_unknown_after="$(simulator_evidence_field "slack_message_count")"
+if [[ $((slack_unknown_after - slack_unknown_before)) -ne 1 ]]; then
+    printf 'Ambiguous Slack acceptance did not persist exactly one message\n' >&2
+    exit 1
+fi
+
+slack_unknown_replay_id="$(
+    create_task \
+        "smoke-slack-unknown-replay-${GITHUB_RUN_ID:-local}" \
+        "deployment_context_sync" \
+        '{"jira_issue_key":"ENG-124","github_repository":"customer/example-service","github_issue_number":43,"service_id":"payments-api","publish_slack_notification":true,"slack_channel_id":"CUNKNOWN001"}'
+)"
+approve_task "${slack_unknown_replay_id}"
+wait_for_task_status "${slack_unknown_replay_id}" "succeeded"
+if [[ "$(simulator_evidence_field "slack_message_count")" -ne "${slack_unknown_after}" ]]; then
+    printf 'Unknown Slack outcome was blindly resent\n' >&2
+    exit 1
+fi
+
+announce "Preserving GitHub success after a permanent Slack failure"
+slack_permanent_task_id="$(
+    create_task \
+        "smoke-slack-permanent-${GITHUB_RUN_ID:-local}" \
+        "deployment_context_sync" \
+        '{"jira_issue_key":"ENG-124","github_repository":"customer/example-service","github_issue_number":44,"service_id":"payments-api","publish_slack_notification":true,"slack_channel_id":"CPERMFAIL01"}'
+)"
+approve_task "${slack_permanent_task_id}"
+wait_for_task_status "${slack_permanent_task_id}" "succeeded"
+slack_permanent_response="$(curl --silent --show-error "${api_url}/tasks/${slack_permanent_task_id}")"
+python3 -c \
+    'import json, sys
+task = json.loads(sys.argv[1])
+assert task["result"]["authoritative_github_action"]["provider_resource_identifier"]
+assert task["result"]["secondary_slack_notification"]["state"] == "permanent_failure"
+assert task["result"]["secondary_slack_notification"]["safe_error_code"] == "slack_channel_not_found"' \
+    "${slack_permanent_response}"
 
 announce "Reconciling an accepted write with a malformed successful response"
 ambiguous_before="$(simulator_evidence_field "comment_count")"
@@ -339,17 +417,21 @@ announce "Proving policy-blocked work performs no GitHub or Jira access"
 blocked_github_before="$(simulator_evidence_field "github_read_calls")"
 blocked_jira_before="$(simulator_evidence_field "jira_calls")"
 blocked_create_before="$(simulator_evidence_field "create_calls")"
+blocked_slack_identity_before="$(simulator_evidence_field "slack_identity_calls")"
+blocked_slack_post_before="$(simulator_evidence_field "slack_post_calls")"
 blocked_task_id="$(
     create_task \
         "smoke-blocked-${GITHUB_RUN_ID:-local}" \
         "deployment_context_sync" \
-        '{"jira_issue_key":"ENG-123","github_repository":"customer/blocked-service","github_issue_number":42,"service_id":"blocked-service","publish_slack_notification":false}'
+        '{"jira_issue_key":"ENG-123","github_repository":"customer/blocked-service","github_issue_number":42,"service_id":"blocked-service","publish_slack_notification":true,"slack_channel_id":"C1234567890"}'
 )"
 approve_task "${blocked_task_id}"
 wait_for_task_status "${blocked_task_id}" "succeeded"
 if [[ "$(simulator_evidence_field "github_read_calls")" -ne "${blocked_github_before}" ]] \
     || [[ "$(simulator_evidence_field "jira_calls")" -ne "${blocked_jira_before}" ]] \
-    || [[ "$(simulator_evidence_field "create_calls")" -ne "${blocked_create_before}" ]]; then
+    || [[ "$(simulator_evidence_field "create_calls")" -ne "${blocked_create_before}" ]] \
+    || [[ "$(simulator_evidence_field "slack_identity_calls")" -ne "${blocked_slack_identity_before}" ]] \
+    || [[ "$(simulator_evidence_field "slack_post_calls")" -ne "${blocked_slack_post_before}" ]]; then
     printf 'Policy-blocked workflow accessed a downstream provider\n' >&2
     exit 1
 fi

@@ -42,6 +42,7 @@ addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
   "postgres: requires a live PostgreSQL database",
+  "sandbox: opt-in tests against explicitly confirmed Amir-controlled providers",
 ]
 
 [tool.ruff]

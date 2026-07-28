@@ -90,3 +90,35 @@ def test_integration_logs_use_allowlisted_metadata_only() -> None:
         "lease-hash-never-log",
     ):
         assert secret not in rendered
+
+
+def test_json_formatter_emits_only_low_cardinality_metric_fields() -> None:
+    record = logging.LogRecord(
+        name="ninjatech_deployment_lab.integrations.metrics",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="operational_metric",
+        args=(),
+        exc_info=None,
+    )
+    record.metric_name = "provider_request_count"
+    record.metric_kind = "counter"
+    record.metric_value = 1.0
+    record.metric_labels = {
+        "provider": "slack",
+        "operation": "write",
+        "outcome": "success",
+    }
+    record.task_id = "task-must-not-be-used-as-a-metric-label"
+
+    payload = json.loads(JsonFormatter(service_name="test-service").format(record))
+
+    assert payload["metric_name"] == "provider_request_count"
+    assert payload["metric_labels"] == {
+        "provider": "slack",
+        "operation": "write",
+        "outcome": "success",
+    }
+    assert "task_id" in payload
+    assert "task_id" not in payload["metric_labels"]

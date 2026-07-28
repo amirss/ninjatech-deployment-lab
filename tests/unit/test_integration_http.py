@@ -12,6 +12,10 @@ from ninjatech_deployment_lab.integrations.http import (
     IntegrationHttpClient,
     ProviderContractError,
 )
+from ninjatech_deployment_lab.integrations.metrics import (
+    MetricOperation,
+    MetricProvider,
+)
 
 
 class _Response:
@@ -81,6 +85,8 @@ def test_malformed_successful_write_is_outcome_unknown() -> None:
                 path="comments",
                 json_body={"body": "bounded"},
                 write=True,
+                provider=MetricProvider.GITHUB,
+                operation=MetricOperation.WRITE,
             )
         )
 
@@ -101,6 +107,8 @@ def test_oversized_successful_write_is_outcome_unknown() -> None:
                 base_url="https://trusted.example",
                 path="comments",
                 write=True,
+                provider=MetricProvider.GITHUB,
+                operation=MetricOperation.WRITE,
             )
         )
 
@@ -115,6 +123,8 @@ def test_malformed_successful_read_is_contract_failure() -> None:
                 method="GET",
                 base_url="https://trusted.example",
                 path="resource",
+                provider=MetricProvider.GITHUB,
+                operation=MetricOperation.READ,
             )
         )
 
@@ -128,6 +138,8 @@ def test_error_response_does_not_require_or_expose_body() -> None:
             method="GET",
             base_url="https://trusted.example",
             path="resource",
+            provider=MetricProvider.GITHUB,
+            operation=MetricOperation.READ,
         )
     )
     assert response.status_code == 429
@@ -147,6 +159,8 @@ def test_vendor_json_content_type_is_accepted() -> None:
             method="GET",
             base_url="https://trusted.example",
             path="resource",
+            provider=MetricProvider.GITHUB,
+            operation=MetricOperation.READ,
         )
     )
     assert response.payload == {"id": 1}

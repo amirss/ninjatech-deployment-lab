@@ -7,6 +7,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from ninjatech_deployment_lab.config import Settings
 from ninjatech_deployment_lab.integrations.connectors import (
@@ -224,8 +225,101 @@ def test_checkpoint_4a_does_not_silently_accept_slack_publication() -> None:
     )
     with pytest.raises(PermanentTaskError) as captured:
         asyncio.run(handler.execute(task, context))
-    assert captured.value.error_code == "slack_checkpoint_not_enabled"
+    assert captured.value.error_code == "slack_notification_not_enabled"
     assert catalog.calls == 0
+
+
+def _slack_enabled_settings() -> Settings:
+    return Settings(
+        database_url="postgresql+asyncpg://user:pass@localhost/test",
+        environment="test",
+        enable_deployment_context_sync=True,
+        deployment_scope_id="test-scope",
+        deployment_allowed_service_ids=("blocked-service",),
+        deployment_allowed_github_repositories=("customer/example-service",),
+        deployment_allowed_jira_projects=("ENG",),
+        github_expected_login="simulator-bot",
+        enable_slack_notification=True,
+        slack_bot_token=SecretStr("test-only-token"),
+        slack_expected_team_id="T1234567890",
+        slack_expected_user_id="U1234567890",
+        deployment_allowed_slack_channels=("C1234567890",),
+    )
+
+
+def test_unauthorized_slack_request_is_rejected_before_catalog_access() -> None:
+    catalog = _Catalog(_record())
+    downstream = _ForbiddenDownstream()
+    handler = DeploymentContextSyncHandler(
+        settings=_slack_enabled_settings(),
+        service_catalog=catalog,
+        jira=cast(Any, downstream),
+        github=cast(Any, downstream),
+        artifacts=cast(Any, _Artifacts()),
+        actions=cast(Any, downstream),
+        slack_delivery_factory=lambda: cast(Any, downstream),
+    )
+    task, context = _execution()
+    task = TaskExecution(
+        task_id=task.task_id,
+        task_type=task.task_type,
+        task_input={
+            **task.task_input,
+            "publish_slack_notification": True,
+            "slack_channel_id": "C0000000000",
+        },
+        attempt_id=task.attempt_id,
+        attempt_number=task.attempt_number,
+        max_attempts=task.max_attempts,
+        execution_fence=task.execution_fence,
+    )
+    with pytest.raises(PermanentTaskError) as captured:
+        asyncio.run(handler.execute(task, context))
+    assert captured.value.error_code == "slack_channel_not_allowed"
+    assert catalog.calls == 0
+    assert downstream.calls == 0
+
+
+def test_policy_blocked_slack_request_performs_no_slack_or_downstream_access() -> None:
+    catalog = _Catalog(_record())
+    downstream = _ForbiddenDownstream()
+    factory_calls = 0
+
+    def forbidden_factory() -> Any:
+        nonlocal factory_calls
+        factory_calls += 1
+        raise AssertionError("Slack connector was constructed for blocked policy")
+
+    handler = DeploymentContextSyncHandler(
+        settings=_slack_enabled_settings(),
+        service_catalog=catalog,
+        jira=cast(Any, downstream),
+        github=cast(Any, downstream),
+        artifacts=cast(Any, _Artifacts()),
+        actions=cast(Any, downstream),
+        slack_delivery_factory=forbidden_factory,
+    )
+    task, context = _execution()
+    task = TaskExecution(
+        task_id=task.task_id,
+        task_type=task.task_type,
+        task_input={
+            **task.task_input,
+            "publish_slack_notification": True,
+            "slack_channel_id": "C1234567890",
+        },
+        attempt_id=task.attempt_id,
+        attempt_number=task.attempt_number,
+        max_attempts=task.max_attempts,
+        execution_fence=task.execution_fence,
+    )
+    result = asyncio.run(handler.execute(task, context))
+    notification = cast(dict[str, object], result["secondary_slack_notification"])
+    assert notification["requested"] is True
+    assert notification["state"] == "needs_human_review"
+    assert catalog.calls == 1
+    assert downstream.calls == 0
+    assert factory_calls == 0
 
 
 def _ready_settings() -> Settings:
