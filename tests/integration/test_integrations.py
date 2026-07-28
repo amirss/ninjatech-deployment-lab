@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -92,9 +93,11 @@ class _AcceptedCommentGitHub:
         *,
         customer_cancellation: asyncio.Event | None = None,
         ownership_lost: asyncio.Event | None = None,
+        after_accept: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.customer_cancellation = customer_cancellation
         self.ownership_lost = ownership_lost
+        self.after_accept = after_accept
         self.comments: list[GitHubComment] = []
         self.create_calls = 0
 
@@ -133,6 +136,8 @@ class _AcceptedCommentGitHub:
             updated_at=datetime.now(UTC),
         )
         self.comments.append(comment)
+        if self.after_accept is not None:
+            await self.after_accept()
         if self.customer_cancellation is not None:
             self.customer_cancellation.set()
         if self.ownership_lost is not None:
@@ -453,7 +458,15 @@ def test_customer_cancellation_after_confirmed_write_preserves_action_success(
                 decision_snapshot_hash="b" * 64,
             )
             customer_cancellation = asyncio.Event()
-            github = _AcceptedCommentGitHub(customer_cancellation=customer_cancellation)
+
+            async def request_customer_cancellation() -> None:
+                async with session_factory() as cancellation_session:
+                    await TaskService(cancellation_session).cancel_task(claim.task_id)
+
+            github = _AcceptedCommentGitHub(
+                customer_cancellation=customer_cancellation,
+                after_accept=request_customer_cancellation,
+            )
             handler = _integration_handler(settings=settings, github=github, actions=actions)
 
             with pytest.raises(TaskCancelled):
