@@ -69,45 +69,60 @@ Core lesson:
 
 ## Milestone 4 — Enterprise integrations and safe external actions
 
-**Status:** In progress
-
-Scope:
-
-- internal service-catalog policy;
-- Jira read integration;
-- GitHub read and bounded comment write;
-- Slack secondary notification;
-- normalized messy-data models;
-- source provenance;
-- business-scoped external-action ledger;
-- provider identity checks;
-- bounded HTTP behavior;
-- ambiguous-write reconciliation;
-- customer discovery, security, acceptance, and rollout artifacts.
-
-Internal checkpoints:
+**Status:** Checkpoint 4A complete; Checkpoint 4B next
 
 ### 4A — Authoritative path
 
-- policy-first access decision;
-- normalized service-catalog, Jira, and GitHub reads;
-- source artifacts;
-- deterministic decision;
-- GitHub comment identity and reconciliation;
-- delayed-provider and ambiguous-write simulation;
-- blocked/no-write paths.
+**Status:** Complete
 
-### 4B — Secondary delivery
+Built:
 
-- Slack notification semantics;
-- operational metrics;
-- full customer documents;
-- complete Compose smoke scenarios;
-- optional real-provider sandbox tests.
+- deterministic `deployment_context_sync` handler;
+- static and service-catalog policy before unnecessary downstream access;
+- normalized service-catalog, GitHub, and Jira models;
+- bounded async HTTP behavior and connector-specific credentials;
+- provider-principal and returned-resource identity checks;
+- minimized, versioned source artifacts;
+- business-scoped external-action identity independent of task identity;
+- deterministic, order-independent decision snapshots;
+- append-only external-action transition history;
+- exact-comment-ID-first GitHub reconciliation;
+- stable hidden marker search when no provider ID is known;
+- explicit `outcome_unknown` handling for ambiguous writes;
+- reconciliation settlement holdoff for in-flight provider actions;
+- blocked and human-review outcomes that perform no unauthorized write;
+- customer-cancellation and ownership-loss handling after a provider action;
+- development/test-only provider simulator;
+- complete migration, PostgreSQL, and container smoke validation.
+
+Verified on the final 4A head:
+
+- Ruff formatting and linting;
+- strict mypy;
+- Alembic upgrade, downgrade, and re-upgrade;
+- 209 PostgreSQL-backed tests with zero skips;
+- non-root container runtime;
+- successful workflow, independent-task replay, ambiguous-write reconciliation, policy-blocked zero-access behavior, delayed provider acceptance, cancellation, ownership-loss recovery, and database-outage readiness.
 
 Core lesson:
 
-> Once a worker changes another system, task retries are not enough. External actions need stable business identity and reconciliation.
+> Once a worker changes another system, task retries are not enough. External actions need stable business identity, explicit uncertainty, and reconciliation.
+
+### 4B — Secondary delivery
+
+**Status:** Planned next
+
+Expected scope:
+
+- Slack notification as a secondary, non-authoritative external action;
+- no-blind-resend behavior for ambiguous notification delivery;
+- low-cardinality operational metrics;
+- concise customer discovery, workflow, security, acceptance, and rollout artifacts;
+- final Compose smoke scenarios;
+- optional real-provider sandbox tests, disabled in ordinary CI;
+- explicit retention and deletion gap documentation.
+
+The authoritative GitHub outcome must remain valid even when Slack is unavailable or ambiguous.
 
 ## Milestone 5 — Agentic workflow
 

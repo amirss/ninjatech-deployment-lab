@@ -19,19 +19,25 @@ The project is built incrementally around a realistic Forward Deployed Engineer 
 - Structured observability
 - Dockerized, non-root execution
 - Real PostgreSQL and end-to-end CI validation
-- Safe enterprise-integration and reconciliation patterns
+- Policy-first enterprise integration
+- Business-scoped external-action identity
+- Safe reconciliation after ambiguous provider writes
 
 ## Current status
 
-Milestones 1–3 are complete:
+Completed:
 
 1. Production service foundation
 2. Persistent idempotent task state machine
 3. Reliable worker execution
+4. Milestone 4A — authoritative enterprise integration path
 
-Milestone 4 is in progress:
+Milestone 4A adds a deterministic `deployment_context_sync` workflow across a customer service catalog, GitHub, and Jira. It normalizes messy provider data, checks policy before unnecessary access, preserves minimized source evidence, and creates or reconciles one bounded GitHub comment without blindly repeating an uncertain write.
 
-4. Enterprise integrations and safe external actions
+Next:
+
+- Milestone 4B — secondary Slack delivery, operational metrics, and customer-facing deployment artifacts
+- Milestone 5 — a reasoning model operating through the already bounded and verifiable tool layer
 
 The project deliberately builds reliability before introducing an LLM. A later reasoning agent will operate on top of a durable, observable, and permission-bounded execution system rather than replacing one.
 
