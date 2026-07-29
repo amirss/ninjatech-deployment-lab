@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -9,6 +10,15 @@ from urllib.parse import urljoin, urlsplit
 import httpx2
 
 from ninjatech_deployment_lab.config import Settings
+from ninjatech_deployment_lab.integrations.metrics import (
+    MetricLabel,
+    MetricName,
+    MetricOperation,
+    MetricOutcome,
+    MetricProvider,
+    MetricsSink,
+    StructuredLoggingMetricsSink,
+)
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
 
 
@@ -46,8 +56,9 @@ class JsonHttpResponse:
 class IntegrationHttpClient:
     """Only module allowed to expose httpx2 internally."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, metrics: MetricsSink | None = None) -> None:
         self._maximum_bytes = settings.integration_max_response_bytes
+        self._metrics = metrics or StructuredLoggingMetricsSink()
         self._client = httpx2.AsyncClient(
             timeout=httpx2.Timeout(
                 connect=settings.integration_http_connect_timeout_seconds,
@@ -75,7 +86,11 @@ class IntegrationHttpClient:
         correlation_id: str | None = None,
         write: bool = False,
         timeout_seconds: float | None = None,
+        provider: MetricProvider,
+        operation: MetricOperation,
     ) -> JsonHttpResponse:
+        started = time.monotonic()
+        outcome = MetricOutcome.SUCCESS
         url = self._trusted_url(base_url, path)
         request_headers = dict(headers or {})
         if correlation_id is not None:
@@ -115,14 +130,32 @@ class IntegrationHttpClient:
                         if write and 200 <= response.status_code < 300:
                             raise AmbiguousWriteError from None
                         raise ProviderContractError from None
+                if response.status_code == 429:
+                    outcome = MetricOutcome.RATE_LIMITED
+                    self._metrics.increment(
+                        MetricName.PROVIDER_RATE_LIMIT_COUNT,
+                        labels={
+                            MetricLabel.PROVIDER: provider,
+                            MetricLabel.OPERATION: operation,
+                        },
+                    )
+                elif response.status_code >= 500 or response.status_code == 408:
+                    outcome = MetricOutcome.RETRYABLE_FAILURE
+                elif response.status_code >= 400:
+                    outcome = MetricOutcome.PERMANENT_FAILURE
                 return JsonHttpResponse(
                     status_code=response.status_code,
                     headers=response_headers,
                     payload=payload,
                 )
-        except (AmbiguousWriteError, ProviderContractError):
+        except AmbiguousWriteError:
+            outcome = MetricOutcome.OUTCOME_UNKNOWN
+            raise
+        except ProviderContractError:
+            outcome = MetricOutcome.CONTRACT_FAILURE
             raise
         except (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout):
+            outcome = MetricOutcome.RETRYABLE_FAILURE
             raise RetryableHttpError from None
         except (
             httpx2.ReadError,
@@ -132,8 +165,25 @@ class IntegrationHttpClient:
             httpx2.WriteTimeout,
         ):
             if write:
+                outcome = MetricOutcome.OUTCOME_UNKNOWN
                 raise AmbiguousWriteError from None
+            outcome = MetricOutcome.RETRYABLE_FAILURE
             raise RetryableHttpError from None
+        finally:
+            labels = {
+                MetricLabel.PROVIDER: provider,
+                MetricLabel.OPERATION: operation,
+                MetricLabel.OUTCOME: outcome,
+            }
+            self._metrics.increment(
+                MetricName.PROVIDER_REQUEST_COUNT,
+                labels=labels,
+            )
+            self._metrics.observe(
+                MetricName.PROVIDER_LATENCY_SECONDS,
+                time.monotonic() - started,
+                labels=labels,
+            )
 
     @staticmethod
     def _trusted_url(base_url: str, path: str) -> str:

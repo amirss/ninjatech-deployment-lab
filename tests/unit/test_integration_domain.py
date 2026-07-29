@@ -22,6 +22,7 @@ from ninjatech_deployment_lab.integrations.domain import (
     JiraWorkItem,
     ServiceCatalogRecord,
     canonical_source_url,
+    provider_action_url,
     sha256_json,
 )
 from ninjatech_deployment_lab.integrations.rendering import render_github_comment
@@ -83,6 +84,30 @@ def test_source_urls_are_canonical_and_markers_do_not_expose_scope() -> None:
     assert canonical_source_url("https://example.test/a?token=secret#fragment") == (
         "https://example.test/a"
     )
+
+
+def test_provider_action_url_preserves_safe_fragment_but_removes_query() -> None:
+    value = provider_action_url(
+        "https://github.example/customer/service/issues/42?access_token=secret#issuecomment-123"
+    )
+    assert value == ("https://github.example/customer/service/issues/42#issuecomment-123")
+    assert canonical_source_url(value) == ("https://github.example/customer/service/issues/42")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://user:password@github.example/issues/42#issuecomment-123",
+        "javascript:alert(1)",
+        "https://github.example/issues/42\n#issuecomment-123",
+        "https://github.example/issues/42#issuecomment-123|unsafe",
+    ],
+)
+def test_provider_action_url_rejects_credentials_schemes_and_controls(
+    value: str,
+) -> None:
+    with pytest.raises(ValueError):
+        provider_action_url(value)
 
 
 def test_service_catalog_mapping_resolves_legacy_fields_and_repository_case() -> None:

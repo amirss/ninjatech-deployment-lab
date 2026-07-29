@@ -5,7 +5,10 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from ninjatech_deployment_lab.config import Settings
-from ninjatech_deployment_lab.integrations.connectors import GitHubClient
+from ninjatech_deployment_lab.integrations.connectors import (
+    GitHubClient,
+    _normalize_comment,
+)
 from ninjatech_deployment_lab.integrations.credentials import CredentialProvider
 from ninjatech_deployment_lab.integrations.http import IntegrationHttpClient, JsonHttpResponse
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
@@ -81,3 +84,21 @@ def test_github_identity_comparison_is_case_insensitive() -> None:
     client = _client([{"login": "Simulator-Bot"}], expected_login="simulator-bot")
 
     assert asyncio.run(client.verify_identity(correlation_id="test")) is True
+
+
+def test_github_comment_normalization_preserves_exact_safe_anchor() -> None:
+    comment = _normalize_comment(
+        {
+            "id": 123,
+            "body": "bounded",
+            "html_url": (
+                "https://github.example/customer/example-service/issues/42"
+                "?temporary=secret#issuecomment-123"
+            ),
+            "updated_at": "2026-07-29T12:00:00Z",
+        },
+        ambiguous_on_failure=False,
+    )
+    assert comment.url == (
+        "https://github.example/customer/example-service/issues/42#issuecomment-123"
+    )

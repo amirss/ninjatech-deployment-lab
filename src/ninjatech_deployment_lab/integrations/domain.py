@@ -21,6 +21,9 @@ from pydantic import (
 
 WORKFLOW_VERSION = "deployment_context_sync:v1"
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_MAX_PROVIDER_ACTION_URL_CHARS = 2000
+_MAX_PROVIDER_ACTION_FRAGMENT_CHARS = 255
+_SAFE_PROVIDER_ACTION_FRAGMENT = re.compile(r"^[A-Za-z0-9._~:-]*$")
 
 
 class StrictModel(BaseModel):
@@ -171,11 +174,47 @@ class ExternalActionReference(StrictModel):
     provider_url: str | None = None
 
 
+class SlackDeliveryState(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    SUCCEEDED = "succeeded"
+    RETRYABLE_FAILURE = "retryable_failure"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    PERMANENT_FAILURE = "permanent_failure"
+    NEEDS_HUMAN_REVIEW = "needs_human_review"
+
+
+class SlackNotificationResult(StrictModel):
+    requested: bool
+    state: SlackDeliveryState
+    action: ExternalActionReference | None = None
+    safe_error_code: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,100}$")
+
+    @model_validator(mode="after")
+    def validate_state_evidence(self) -> SlackNotificationResult:
+        if self.state is SlackDeliveryState.NOT_REQUESTED:
+            if self.requested or self.action is not None or self.safe_error_code is not None:
+                raise ValueError("not-requested Slack delivery cannot contain action evidence")
+        elif not self.requested:
+            raise ValueError("requested must be true for a Slack delivery outcome")
+        if self.state is SlackDeliveryState.SUCCEEDED:
+            if self.action is None or self.action.provider_resource_identifier is None:
+                raise ValueError("successful Slack delivery requires provider evidence")
+            if self.safe_error_code is not None:
+                raise ValueError("successful Slack delivery cannot contain an error")
+        return self
+
+
 class DeploymentContextResult(StrictModel):
     workflow_version: str = WORKFLOW_VERSION
     decision: DeploymentContextDecision
     source_artifacts: tuple[SourceReference, ...]
     authoritative_github_action: ExternalActionReference | None = None
+    secondary_slack_notification: SlackNotificationResult = Field(
+        default_factory=lambda: SlackNotificationResult(
+            requested=False,
+            state=SlackDeliveryState.NOT_REQUESTED,
+        )
+    )
 
 
 def canonical_json(value: object) -> bytes:
@@ -214,3 +253,25 @@ def canonical_source_url(value: str) -> str:
         raise ValueError("source URL must be absolute HTTP(S)")
     port = f":{parsed.port}" if parsed.port is not None else ""
     return urlunsplit((parsed.scheme, f"{parsed.hostname}{port}", parsed.path, "", ""))
+
+
+def provider_action_url(value: str) -> str:
+    """Sanitize a trusted provider action URL while preserving its exact resource fragment."""
+    if len(value) > _MAX_PROVIDER_ACTION_URL_CHARS or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        raise ValueError("provider action URL is invalid")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or len(parsed.fragment) > _MAX_PROVIDER_ACTION_FRAGMENT_CHARS
+        or _SAFE_PROVIDER_ACTION_FRAGMENT.fullmatch(parsed.fragment) is None
+    ):
+        raise ValueError("provider action URL must be safe absolute HTTP(S)")
+    sanitized = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", parsed.fragment))
+    if len(sanitized) > _MAX_PROVIDER_ACTION_URL_CHARS:
+        raise ValueError("provider action URL exceeds its size limit")
+    return sanitized

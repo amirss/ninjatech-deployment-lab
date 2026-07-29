@@ -18,9 +18,21 @@ from ninjatech_deployment_lab.integrations.domain import (
     canonical_source_url,
     sha256_json,
 )
+from ninjatech_deployment_lab.integrations.metrics import (
+    MetricLabel,
+    MetricName,
+    MetricOperation,
+    MetricOutcome,
+    MetricProvider,
+    MetricsSink,
+    StructuredLoggingMetricsSink,
+)
 from ninjatech_deployment_lab.integrations.model import (
+    SUPPORTED_EXTERNAL_ACTIONS,
     ExternalAction,
     ExternalActionAttempt,
+    ExternalActionOperation,
+    ExternalActionProvider,
     ExternalActionStatus,
     SourceArtifact,
 )
@@ -144,17 +156,27 @@ class SourceArtifactRepository:
 class ExternalActionRepository:
     """Fenced state transitions with one atomic append-only evidence row."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        metrics: MetricsSink | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._metrics = metrics or StructuredLoggingMetricsSink()
 
     async def reserve_or_get(
         self,
         *,
         fence: ExecutionFence,
+        provider: ExternalActionProvider,
+        operation: ExternalActionOperation,
         action_scope_key: str,
         desired_request_fingerprint: str,
         decision_snapshot_hash: str,
     ) -> ActionReservation:
+        if (provider, operation) not in SUPPORTED_EXTERNAL_ACTIONS:
+            raise ValueError("unsupported external-action provider and operation")
         async with self._session_factory() as session:
             async with session.begin():
                 now = await _database_now(session)
@@ -167,8 +189,8 @@ class ExternalActionRepository:
                             id=action_id,
                             task_id=fence.task_id,
                             current_attempt_id=fence.attempt_id,
-                            provider="github",
-                            operation="upsert_deployment_context_comment",
+                            provider=provider.value,
+                            operation=operation.value,
                             action_scope_key=action_scope_key,
                             desired_request_fingerprint=desired_request_fingerprint,
                             decision_snapshot_hash=decision_snapshot_hash,
@@ -218,6 +240,10 @@ class ExternalActionRepository:
                         .with_for_update()
                     )
                 ).scalar_one()
+                if action.provider != provider.value or action.operation != operation.value:
+                    raise ExecutionInvariantError(
+                        "external action scope belongs to another provider operation"
+                    )
                 if action.desired_request_fingerprint == desired_request_fingerprint:
                     kind = (
                         ActionReservationKind.REPLAY
@@ -245,6 +271,14 @@ class ExternalActionRepository:
                         "action_status": action.status,
                     },
                 )
+                if kind is ActionReservationKind.REPLAY:
+                    self._metrics.increment(
+                        MetricName.DUPLICATE_ACTION_PREVENTION_COUNT,
+                        labels={
+                            MetricLabel.PROVIDER: _metric_provider(action),
+                            MetricLabel.OPERATION: _metric_operation(action),
+                        },
+                    )
                 return ActionReservation(action, kind)
 
     async def transition(
@@ -258,7 +292,14 @@ class ExternalActionRepository:
         values: dict[str, Any] | None = None,
         error_code: str | None = None,
         settlement_delay_seconds: float | None = None,
+        not_before_delay_seconds: float | None = None,
     ) -> ExternalAction:
+        if settlement_delay_seconds is not None and not_before_delay_seconds is not None:
+            raise ValueError("a transition cannot set both write settlement and retry delays")
+        if (settlement_delay_seconds is not None and settlement_delay_seconds < 0) or (
+            not_before_delay_seconds is not None and not_before_delay_seconds < 0
+        ):
+            raise ValueError("external action delays must not be negative")
         async with self._session_factory() as session:
             async with session.begin():
                 now = await _database_now(session)
@@ -289,6 +330,10 @@ class ExternalActionRepository:
                     update_values["write_started_at"] = now
                     update_values["reconcile_not_before"] = now + timedelta(
                         seconds=settlement_delay_seconds
+                    )
+                if not_before_delay_seconds is not None:
+                    update_values["reconcile_not_before"] = now + timedelta(
+                        seconds=not_before_delay_seconds
                     )
                 result = cast(
                     CursorResult[Any],
@@ -330,6 +375,22 @@ class ExternalActionRepository:
                         "error_code": error_code,
                     },
                 )
+                self._metrics.increment(
+                    MetricName.EXTERNAL_ACTION_OUTCOME_COUNT,
+                    labels={
+                        MetricLabel.PROVIDER: _metric_provider(updated),
+                        MetricLabel.OPERATION: _metric_operation(updated),
+                        MetricLabel.ACTION_STATUS: new_status,
+                    },
+                )
+                if "reconcil" in transition:
+                    self._metrics.increment(
+                        MetricName.RECONCILIATION_COUNT,
+                        labels={
+                            MetricLabel.PROVIDER: _metric_provider(updated),
+                            MetricLabel.OUTCOME: _metric_outcome(new_status),
+                        },
+                    )
                 return updated
 
     async def revise(
@@ -398,7 +459,7 @@ class ExternalActionRepository:
             ).scalar_one()
 
     async def reconciliation_delay_seconds(self, action_id: UUID) -> float:
-        """Use PostgreSQL time to avoid application-clock skew in write holdoff."""
+        """Return the database-authoritative delay before another action attempt."""
         async with self._session_factory() as session:
             delay = (
                 await session.execute(
@@ -550,3 +611,27 @@ def _require_one_row(result: CursorResult[Any], operation: str) -> None:
         raise ExecutionInvariantError(
             f"{operation} expected one row but affected {result.rowcount}"
         )
+
+
+def _metric_provider(action: ExternalAction) -> MetricProvider:
+    return MetricProvider(action.provider)
+
+
+def _metric_operation(action: ExternalAction) -> MetricOperation:
+    return {
+        ExternalActionOperation.UPSERT_DEPLOYMENT_CONTEXT_COMMENT.value: (
+            MetricOperation.GITHUB_COMMENT
+        ),
+        ExternalActionOperation.POST_DEPLOYMENT_CONTEXT_NOTIFICATION.value: (
+            MetricOperation.SLACK_NOTIFICATION
+        ),
+    }[action.operation]
+
+
+def _metric_outcome(status: ExternalActionStatus) -> MetricOutcome:
+    return {
+        ExternalActionStatus.SUCCEEDED: MetricOutcome.SUCCESS,
+        ExternalActionStatus.RETRYABLE_FAILURE: MetricOutcome.RETRYABLE_FAILURE,
+        ExternalActionStatus.PERMANENT_FAILURE: MetricOutcome.PERMANENT_FAILURE,
+        ExternalActionStatus.OUTCOME_UNKNOWN: MetricOutcome.OUTCOME_UNKNOWN,
+    }.get(status, MetricOutcome.SUCCESS)

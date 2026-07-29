@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, StringConstraints, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+SlackChannelId = Annotated[str, StringConstraints(pattern=r"^[CG][A-Z0-9]{8,30}$")]
 
 
 class Settings(BaseSettings):
@@ -54,6 +56,16 @@ class Settings(BaseSettings):
     jira_username: str | None = Field(default=None, min_length=1, max_length=255)
     github_token: SecretStr | None = None
     github_token_file: Path | None = None
+    enable_slack_notification: bool = False
+    slack_base_url: str = "http://127.0.0.1:8090/slack"
+    slack_bot_token: SecretStr | None = None
+    slack_bot_token_file: Path | None = None
+    slack_expected_team_id: str | None = Field(default=None, min_length=1, max_length=255)
+    slack_expected_user_id: str | None = Field(default=None, min_length=1, max_length=255)
+    slack_expected_bot_id: str | None = Field(default=None, min_length=1, max_length=255)
+    deployment_allowed_slack_channels: tuple[SlackChannelId, ...] = ()
+    slack_max_text_chars: int = Field(default=1000, ge=100, le=4000)
+    slack_write_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     integration_http_connect_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     integration_http_read_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     integration_http_write_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
@@ -121,10 +133,43 @@ class Settings(BaseSettings):
             ):
                 msg = "provider write timeout must be shorter than the worker lease"
                 raise ValueError(msg)
+        if self.enable_slack_notification:
+            if self.environment not in {"development", "test", "demo", "sandbox"}:
+                msg = (
+                    "Slack notifications cannot be enabled in staging or production "
+                    "without authentication and tenancy"
+                )
+                raise ValueError(msg)
+            if not self.enable_deployment_context_sync:
+                msg = "Slack notifications require deployment_context_sync"
+                raise ValueError(msg)
+            if self.slack_expected_team_id is None or not self.slack_expected_team_id.strip():
+                msg = "slack_expected_team_id is required when Slack is enabled"
+                raise ValueError(msg)
+            if self.slack_expected_user_id is None or not self.slack_expected_user_id.strip():
+                msg = "slack_expected_user_id is required when Slack is enabled"
+                raise ValueError(msg)
+            if not self.deployment_allowed_slack_channels:
+                msg = "at least one Slack channel must be allowlisted"
+                raise ValueError(msg)
+            if self.slack_bot_token is None and self.slack_bot_token_file is None:
+                msg = "Slack requires one bot-token credential source"
+                raise ValueError(msg)
+            if (
+                self.slack_bot_token_file is not None
+                and not self.slack_bot_token_file.is_absolute()
+            ):
+                msg = "Slack bot-token file path must be absolute"
+                raise ValueError(msg)
+            self._validate_integration_base_url(self.slack_base_url)
+            if self.slack_write_timeout_seconds >= self.worker_lease_duration_seconds:
+                msg = "Slack write timeout must be shorter than the worker lease"
+                raise ValueError(msg)
         for inline_secret, secret_file, name in (
             (self.service_catalog_token, self.service_catalog_token_file, "service catalog"),
             (self.jira_api_token, self.jira_api_token_file, "Jira"),
             (self.github_token, self.github_token_file, "GitHub"),
+            (self.slack_bot_token, self.slack_bot_token_file, "Slack"),
         ):
             if inline_secret is not None and secret_file is not None:
                 msg = f"{name} credential must use either an environment value or a file"

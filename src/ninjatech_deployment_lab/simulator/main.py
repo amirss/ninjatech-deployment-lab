@@ -5,7 +5,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 app = FastAPI(title="NinjaTech Milestone 4 Provider Simulator")
@@ -14,6 +14,15 @@ app = FastAPI(title="NinjaTech Milestone 4 Provider Simulator")
 class CommentBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     body: str = Field(min_length=1, max_length=32768)
+
+
+class SlackMessageBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    channel: str = Field(pattern=r"^[CG][A-Z0-9]{8,30}$")
+    text: str = Field(min_length=1, max_length=4000)
+    mrkdwn: bool
+    unfurl_links: bool
+    unfurl_media: bool
 
 
 class SimulatorState:
@@ -27,6 +36,10 @@ class SimulatorState:
         self.github_read_calls = 0
         self.jira_calls = 0
         self.delayed_acceptance_started = False
+        self.slack_identity_calls = 0
+        self.slack_post_calls = 0
+        self.slack_messages: list[dict[str, str]] = []
+        self.next_slack_timestamp = 1_722_000_000
 
     async def add_comment(
         self,
@@ -52,6 +65,18 @@ class SimulatorState:
             }
             self.comments[identifier] = comment
             return comment
+
+    async def add_slack_message(self, payload: SlackMessageBody) -> dict[str, str]:
+        async with self.lock:
+            timestamp = f"{self.next_slack_timestamp}.000001"
+            self.next_slack_timestamp += 1
+            message = {
+                "channel": payload.channel,
+                "timestamp": timestamp,
+                "text": payload.text,
+            }
+            self.slack_messages.append(message)
+            return message
 
 
 state = SimulatorState()
@@ -247,6 +272,60 @@ async def update_comment(
         return _public_comment(comment)
 
 
+@app.post("/slack/auth.test")
+async def slack_auth_test(
+    authorization: str | None = Header(default=None),
+) -> dict[str, object]:
+    state.slack_identity_calls += 1
+    if authorization is None or authorization.endswith("simulator-revoked-token"):
+        return {"ok": False, "error": "invalid_auth"}
+    team_id = (
+        "T0000000000" if authorization.endswith("simulator-wrong-team-token") else "T1234567890"
+    )
+    user_id = (
+        "U0000000000" if authorization.endswith("simulator-wrong-user-token") else "U1234567890"
+    )
+    bot_id = "B0000000000" if authorization.endswith("simulator-wrong-bot-token") else "B1234567890"
+    return {
+        "ok": True,
+        "team_id": team_id,
+        "user_id": user_id,
+        "bot_id": bot_id,
+        "team": "Fictional Simulator",
+    }
+
+
+@app.post("/slack/chat.postMessage", response_model=None)
+async def slack_post_message(payload: SlackMessageBody) -> dict[str, object] | Response:
+    state.slack_post_calls += 1
+    if payload.mrkdwn is not True or payload.unfurl_links or payload.unfurl_media:
+        return {"ok": False, "error": "invalid_arguments"}
+    if payload.channel == "CRATELIMIT1":
+        return Response(
+            content='{"ok":false,"error":"ratelimited"}',
+            status_code=429,
+            media_type="application/json",
+            headers={"Retry-After": "1"},
+        )
+    if payload.channel == "CPERMFAIL01":
+        return {"ok": False, "error": "channel_not_found"}
+
+    message = await state.add_slack_message(payload)
+    if payload.channel == "CUNKNOWN001":
+        return Response(
+            content="accepted-but-malformed",
+            status_code=200,
+            media_type="text/plain",
+        )
+    if payload.channel == "CDELAYED001":
+        await asyncio.sleep(float(os.getenv("SIMULATOR_SLACK_RESPONSE_DELAY_SECONDS", "10")))
+    return {
+        "ok": True,
+        "channel": message["channel"],
+        "ts": message["timestamp"],
+    }
+
+
 @app.get("/__simulator/evidence")
 async def evidence() -> dict[str, object]:
     return {
@@ -256,6 +335,9 @@ async def evidence() -> dict[str, object]:
         "create_calls": state.create_calls,
         "update_calls": state.update_calls,
         "comment_count": len(state.comments),
+        "slack_identity_calls": state.slack_identity_calls,
+        "slack_post_calls": state.slack_post_calls,
+        "slack_message_count": len(state.slack_messages),
     }
 
 

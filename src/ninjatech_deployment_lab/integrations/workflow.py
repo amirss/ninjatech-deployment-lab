@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TypeVar
 
@@ -30,11 +30,21 @@ from ninjatech_deployment_lab.integrations.domain import (
     GitHubRepositoryContext,
     JiraWorkItem,
     ServiceCatalogRecord,
+    SlackDeliveryState,
+    SlackNotificationResult,
     SourceReference,
     sha256_json,
 )
+from ninjatech_deployment_lab.integrations.metrics import (
+    MetricLabel,
+    MetricName,
+    MetricsSink,
+    StructuredLoggingMetricsSink,
+)
 from ninjatech_deployment_lab.integrations.model import (
     ExternalAction,
+    ExternalActionOperation,
+    ExternalActionProvider,
     ExternalActionStatus,
 )
 from ninjatech_deployment_lab.integrations.persistence import (
@@ -49,6 +59,10 @@ from ninjatech_deployment_lab.integrations.policy import (
     evaluate_static_scope,
 )
 from ninjatech_deployment_lab.integrations.rendering import render_github_comment
+from ninjatech_deployment_lab.integrations.slack import (
+    SlackDeliveryRequest,
+    SlackDeliveryService,
+)
 from ninjatech_deployment_lab.tasks.schemas import JsonValue
 from ninjatech_deployment_lab.worker.domain import (
     ExecutionInvariantError,
@@ -73,6 +87,8 @@ class DeploymentContextSyncHandler:
         github: GitHubReaderWriter,
         artifacts: SourceArtifactRepository,
         actions: ExternalActionRepository,
+        metrics: MetricsSink | None = None,
+        slack_delivery_factory: Callable[[], SlackDeliveryService] | None = None,
     ) -> None:
         self._settings = settings
         self._service_catalog = service_catalog
@@ -80,6 +96,9 @@ class DeploymentContextSyncHandler:
         self._github = github
         self._artifacts = artifacts
         self._actions = actions
+        self._metrics = metrics or StructuredLoggingMetricsSink()
+        self._slack_delivery_factory = slack_delivery_factory
+        self._slack_delivery: SlackDeliveryService | None = None
 
     async def execute(
         self,
@@ -90,17 +109,22 @@ class DeploymentContextSyncHandler:
             task_input = DeploymentContextSyncInput.model_validate(task.task_input)
         except ValidationError:
             raise PermanentTaskError("deployment_context_input_invalid") from None
-        if task_input.publish_slack_notification:
-            raise PermanentTaskError("slack_checkpoint_not_enabled")
+        self._validate_slack_request(task_input)
         context.raise_if_cancelled()
 
         static_result = evaluate_static_scope(task_input, self._settings)
         if static_result is not None:
             self._log_decision(task, static_result)
-            return self._result(
+            result = self._result(
                 evaluation=static_result,
                 references=(),
                 generated_at=datetime.now(UTC),
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
             )
 
         records = await self._provider_call(
@@ -118,10 +142,16 @@ class DeploymentContextSyncHandler:
             selected=catalog_evaluation.record,
         )
         if catalog_evaluation.outcome is not DecisionOutcome.READY:
-            return self._result(
+            result = self._result(
                 evaluation=catalog_evaluation,
                 references=catalog_references,
                 generated_at=datetime.now(UTC),
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
             )
         service = catalog_evaluation.record
         if service is None:
@@ -132,12 +162,18 @@ class DeploymentContextSyncHandler:
             self._github.verify_identity(correlation_id=str(task.task_id))
         )
         if not identity_verified:
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=catalog_references,
                 code=DecisionReasonCode.PROVIDER_IDENTITY_UNVERIFIED,
                 reason="The configured GitHub identity could not be verified.",
                 generated_at=datetime.now(UTC),
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
             )
 
         github = await self._provider_call(
@@ -149,25 +185,37 @@ class DeploymentContextSyncHandler:
         )
         context.raise_if_cancelled()
         if github.full_name.casefold() != task_input.github_repository.casefold():
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=catalog_references,
                 code=DecisionReasonCode.GITHUB_REPOSITORY_IDENTITY_MISMATCH,
                 reason="GitHub returned a repository other than the requested repository.",
                 generated_at=datetime.now(UTC),
             )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+            )
         if github.issue_number != task_input.github_issue_number:
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=catalog_references,
                 code=DecisionReasonCode.GITHUB_ISSUE_IDENTITY_MISMATCH,
                 reason="GitHub returned an issue other than the requested issue.",
                 generated_at=datetime.now(UTC),
             )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+            )
         github_reference = await self._record_github(task, github)
         references = (*catalog_references, github_reference)
         if github.is_pull_request:
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=references,
                 code=DecisionReasonCode.TARGET_IS_PULL_REQUEST,
@@ -175,21 +223,39 @@ class DeploymentContextSyncHandler:
                 generated_at=datetime.now(UTC),
                 outcome=DecisionOutcome.BLOCKED,
             )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+            )
         if github.archived:
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=references,
                 code=DecisionReasonCode.REPOSITORY_ARCHIVED,
                 reason="The authoritative GitHub repository is archived.",
                 generated_at=datetime.now(UTC),
             )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+            )
         if github.issue_state.casefold() != "open":
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=references,
                 code=DecisionReasonCode.ISSUE_CLOSED,
                 reason="The target GitHub issue is not open.",
                 generated_at=datetime.now(UTC),
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
             )
 
         context.raise_if_cancelled()
@@ -201,12 +267,18 @@ class DeploymentContextSyncHandler:
         )
         context.raise_if_cancelled()
         if jira.key.casefold() != task_input.jira_issue_key.casefold():
-            return self._review_result(
+            result = self._review_result(
                 evaluation=catalog_evaluation,
                 references=references,
                 code=DecisionReasonCode.JIRA_ISSUE_IDENTITY_MISMATCH,
                 reason="Jira returned a work item other than the requested issue.",
                 generated_at=datetime.now(UTC),
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
             )
         jira_reference = await self._record_jira(task, jira, service.data_classification)
         references = (*references, jira_reference)
@@ -232,6 +304,8 @@ class DeploymentContextSyncHandler:
         try:
             reservation = await self._actions.reserve_or_get(
                 fence=task.execution_fence,
+                provider=ExternalActionProvider.GITHUB,
+                operation=ExternalActionOperation.UPSERT_DEPLOYMENT_CONTEXT_COMMENT,
                 action_scope_key=action_scope_key,
                 desired_request_fingerprint=desired_fingerprint,
                 decision_snapshot_hash=snapshot_hash,
@@ -242,12 +316,20 @@ class DeploymentContextSyncHandler:
 
         action = reservation.action
         if reservation.kind is ActionReservationKind.SOURCE_DRIFT:
-            return self._action_review_result(
+            result = self._action_review_result(
                 decision,
                 references,
                 action,
                 DecisionReasonCode.SOURCE_VERSION_DRIFT,
                 "Source evidence changed after this action scope was reserved.",
+            )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+                github=github,
+                service=service,
             )
         if reservation.kind is ActionReservationKind.CHANGED:
             action_or_result = await self._prepare_controlled_revision(
@@ -262,28 +344,50 @@ class DeploymentContextSyncHandler:
                 references=references,
             )
             if isinstance(action_or_result, dict):
-                return action_or_result
+                return await self._finish(
+                    result=action_or_result,
+                    task_input=task_input,
+                    task=task,
+                    context=context,
+                    github=github,
+                    service=service,
+                )
             action = action_or_result
         elif (
             reservation.kind is ActionReservationKind.REPLAY
             and ExternalActionStatus(action.status) is ExternalActionStatus.SUCCEEDED
         ):
-            return self._success_result(decision, references, action)
+            return await self._finish(
+                result=self._success_result(decision, references, action),
+                task_input=task_input,
+                task=task,
+                context=context,
+                github=github,
+                service=service,
+            )
         elif reservation.kind is ActionReservationKind.REPLAY and ExternalActionStatus(
             action.status
         ) in {
             ExternalActionStatus.NEEDS_HUMAN_REVIEW,
             ExternalActionStatus.PERMANENT_FAILURE,
         }:
-            return self._action_review_result(
+            result = self._action_review_result(
                 decision,
                 references,
                 action,
                 DecisionReasonCode.RECONCILIATION_INCONCLUSIVE,
                 "The existing authoritative action requires human resolution.",
             )
+            return await self._finish(
+                result=result,
+                task_input=task_input,
+                task=task,
+                context=context,
+                github=github,
+                service=service,
+            )
 
-        return await self._reconcile_and_apply(
+        result = await self._reconcile_and_apply(
             task=task,
             context=context,
             action=action,
@@ -293,6 +397,81 @@ class DeploymentContextSyncHandler:
             desired_fingerprint=desired_fingerprint,
             decision=decision,
             references=references,
+        )
+        return await self._finish(
+            result=result,
+            task_input=task_input,
+            task=task,
+            context=context,
+            github=github,
+            service=service,
+        )
+
+    def _validate_slack_request(self, task_input: DeploymentContextSyncInput) -> None:
+        if not task_input.publish_slack_notification:
+            return
+        if not self._settings.enable_slack_notification:
+            raise PermanentTaskError("slack_notification_not_enabled")
+        channel_id = task_input.slack_channel_id
+        if channel_id is None:
+            raise PermanentTaskError("slack_channel_required")
+        if channel_id not in self._settings.deployment_allowed_slack_channels:
+            raise PermanentTaskError("slack_channel_not_allowed")
+        if self._slack_delivery_factory is None:
+            raise PermanentTaskError("slack_delivery_not_configured")
+
+    async def _finish(
+        self,
+        *,
+        result: dict[str, JsonValue],
+        task_input: DeploymentContextSyncInput,
+        task: TaskExecution,
+        context: HandlerContext,
+        github: GitHubRepositoryContext | None = None,
+        service: ServiceCatalogRecord | None = None,
+    ) -> dict[str, JsonValue]:
+        parsed = DeploymentContextResult.model_validate(result)
+        if not task_input.publish_slack_notification:
+            return parsed.model_dump(mode="json")
+        github_action = parsed.authoritative_github_action
+        channel_id = task_input.slack_channel_id
+        if (
+            parsed.decision.outcome is not DecisionOutcome.READY
+            or github_action is None
+            or github_action.provider_resource_identifier is None
+            or github is None
+            or service is None
+            or channel_id is None
+        ):
+            return parsed.model_copy(
+                update={
+                    "secondary_slack_notification": SlackNotificationResult(
+                        requested=True,
+                        state=SlackDeliveryState.NEEDS_HUMAN_REVIEW,
+                        safe_error_code="slack_authoritative_action_unavailable",
+                    )
+                }
+            ).model_dump(mode="json")
+
+        context.raise_if_cancelled()
+        if self._slack_delivery is None:
+            if self._slack_delivery_factory is None:
+                raise PermanentTaskError("slack_delivery_not_configured")
+            self._slack_delivery = self._slack_delivery_factory()
+        slack_result = await self._slack_delivery.deliver(
+            task=task,
+            context=context,
+            request=SlackDeliveryRequest(
+                channel_id=channel_id,
+                canonical_service_id=service.canonical_service_id,
+                github_repository_id=github.repository_id,
+                github_issue_number=github.issue_number,
+                github_action=github_action,
+                decision=parsed.decision,
+            ),
+        )
+        return parsed.model_copy(update={"secondary_slack_notification": slack_result}).model_dump(
+            mode="json"
         )
 
     async def _reconcile_and_apply(
@@ -719,8 +898,7 @@ class DeploymentContextSyncHandler:
             f"{task_input.github_issue_number}:{service.canonical_service_id}:github_comment"
         )
 
-    @staticmethod
-    def _log_decision(task: TaskExecution, evaluation: PolicyEvaluation) -> None:
+    def _log_decision(self, task: TaskExecution, evaluation: PolicyEvaluation) -> None:
         event = {
             DecisionOutcome.READY: "policy_decision_ready",
             DecisionOutcome.BLOCKED: "policy_decision_blocked",
@@ -735,6 +913,10 @@ class DeploymentContextSyncHandler:
                 "decision_reason_code": evaluation.reason_codes[0].value,
                 "new_status": evaluation.outcome.value,
             },
+        )
+        self._metrics.increment(
+            MetricName.POLICY_DECISION_COUNT,
+            labels={MetricLabel.DECISION: evaluation.outcome},
         )
 
     @staticmethod
