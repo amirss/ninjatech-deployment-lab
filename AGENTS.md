@@ -122,11 +122,20 @@ secret storage.
 - Validate Slack feature enablement and the channel allowlist before catalog or provider
   access. Do not construct the Slack connector for tasks that do not request notification.
 - Authorize Slack only with exact configured team, bot-user, and optional bot IDs from
-  `auth.test`; names are diagnostic only.
+  `auth.test`; names are diagnostic only. Bind any identity cache to the in-memory credential
+  fingerprint and expected-principal tuple, and never log or persist the fingerprint.
 - Render one bounded deterministic top-level Slack message with unfurling disabled. Never
   accept caller-supplied message text, Blocks, metadata, or arbitrary URLs.
-- Scope Slack actions to trusted deployment, GitHub revision, service, and channel values;
-  never use task, attempt, worker, lease, or random IDs as business identity.
+- Scope Slack actions to trusted deployment, Slack workspace, GitHub revision, service, and
+  channel values; never use task, attempt, worker, lease, or random IDs as business identity.
+- Replay the persisted Slack action before any network access. Existing success,
+  `outcome_unknown`, permanent failure, or review state must not depend on current Slack
+  availability.
+- Treat `reconcile_not_before` as the database-authoritative earliest next action attempt.
+  Persist bounded Slack `Retry-After` delays for known-unsent failures, use the documented
+  bounded default when absent, and never busy-loop or confuse this with `outcome_unknown`.
+- Preserve the exact bounded GitHub `#issuecomment-...` anchor in provider action links while
+  continuing to strip fragments from source-artifact URLs.
 - Persist confirmed Slack success before honoring customer cancellation. Ownership loss
   still blocks every stale transition.
 - Never automatically resend a Slack `outcome_unknown` action. This checkpoint deliberately

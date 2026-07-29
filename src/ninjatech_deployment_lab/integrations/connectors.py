@@ -17,6 +17,7 @@ from ninjatech_deployment_lab.integrations.domain import (
     JiraWorkItem,
     ServiceCatalogRecord,
     canonical_source_url,
+    provider_action_url,
 )
 from ninjatech_deployment_lab.integrations.http import (
     AmbiguousWriteError,
@@ -594,7 +595,7 @@ def _normalize_comment(
         return GitHubComment(
             identifier=str(_required_int(value, "id")),
             body=_required_string(value, "body"),
-            url=canonical_source_url(_required_string(value, "html_url")),
+            url=provider_action_url(_required_string(value, "html_url")),
             updated_at=datetime.fromisoformat(_required_string(value, "updated_at")),
         )
     except (TypeError, ValueError, PermanentProviderError):

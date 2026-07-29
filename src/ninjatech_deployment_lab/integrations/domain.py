@@ -21,6 +21,9 @@ from pydantic import (
 
 WORKFLOW_VERSION = "deployment_context_sync:v1"
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_MAX_PROVIDER_ACTION_URL_CHARS = 2000
+_MAX_PROVIDER_ACTION_FRAGMENT_CHARS = 255
+_SAFE_PROVIDER_ACTION_FRAGMENT = re.compile(r"^[A-Za-z0-9._~:-]*$")
 
 
 class StrictModel(BaseModel):
@@ -250,3 +253,25 @@ def canonical_source_url(value: str) -> str:
         raise ValueError("source URL must be absolute HTTP(S)")
     port = f":{parsed.port}" if parsed.port is not None else ""
     return urlunsplit((parsed.scheme, f"{parsed.hostname}{port}", parsed.path, "", ""))
+
+
+def provider_action_url(value: str) -> str:
+    """Sanitize a trusted provider action URL while preserving its exact resource fragment."""
+    if len(value) > _MAX_PROVIDER_ACTION_URL_CHARS or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        raise ValueError("provider action URL is invalid")
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or len(parsed.fragment) > _MAX_PROVIDER_ACTION_FRAGMENT_CHARS
+        or _SAFE_PROVIDER_ACTION_FRAGMENT.fullmatch(parsed.fragment) is None
+    ):
+        raise ValueError("provider action URL must be safe absolute HTTP(S)")
+    sanitized = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", parsed.fragment))
+    if len(sanitized) > _MAX_PROVIDER_ACTION_URL_CHARS:
+        raise ValueError("provider action URL exceeds its size limit")
+    return sanitized

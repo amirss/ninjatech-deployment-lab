@@ -302,7 +302,9 @@ update-enabled service policy; otherwise the result requires human review.
 Before a write, the worker reconciles an exact known comment ID. Only when no reliable ID
 exists does it perform a bounded hidden-marker search. A deleted bound comment, a removed
 marker, multiple matches, or incomplete pagination requires review and never silently
-creates a replacement.
+creates a replacement. Confirmed comment links use a separate action-URL sanitizer that
+removes credentials and query parameters while preserving the bounded
+`#issuecomment-...` anchor; source-artifact URLs continue to remove all fragments.
 
 A write timeout is not an ordinary retry: the provider may have accepted the comment even
 though the worker did not receive a usable response. Such a write becomes
@@ -322,22 +324,30 @@ duplicates and converts uncertainty into human review.
 GitHub is the authoritative business action. Slack is a secondary notification and begins
 only after the GitHub action is confirmed. The connector calls `auth.test` and compares
 opaque team, bot-user, and optional bot IDs exactly against trusted settings. Display names
-never authorize a write. The requested channel must be allowlisted before service-catalog
-or provider access, and message text is rendered from a fixed bounded template rather than
-accepted from the caller.
+never authorize a write. Successful identity verification is cached in memory only against
+the active credential's SHA-256 fingerprint and the complete expected-principal tuple.
+Credential rotation or expected-principal changes force a new `auth.test`; neither the
+credential nor its fingerprint is logged, persisted, returned, or used in metrics. The
+requested channel must be allowlisted before service-catalog or provider access, and message
+text is rendered from a fixed bounded template rather than accepted from the caller.
 
-The Slack action scope includes the deployment scope, GitHub repository and issue, canonical
-service, confirmed GitHub revision, and channel. It excludes task, attempt, worker, and lease
-identifiers. Independent tasks for the same GitHub revision and channel therefore reuse one
-notification action; a new GitHub revision or different channel creates a distinct intent.
+The Slack action scope includes the deployment scope, trusted Slack workspace ID, GitHub
+repository and issue, canonical service, confirmed GitHub revision, and channel. It excludes
+task, attempt, worker, and lease identifiers. Independent tasks for the same workspace,
+GitHub revision, and channel therefore reuse one notification action; a new workspace,
+GitHub revision, or channel creates a distinct intent.
 
 The persisted delivery state is one of `not_requested`, `succeeded`,
 `retryable_failure`, `outcome_unknown`, `permanent_failure`, or
-`needs_human_review`. A known pre-transmission failure may be retried by a later authorized
-task. An ambiguous write—such as a response lost after transmission or a malformed 2xx
-response—is `outcome_unknown` and is never automatically resent because this checkpoint
-does not request Slack history scopes or pretend it can reconcile delivery. Slack failure
-does not erase, reverse, or misrepresent confirmed GitHub success.
+`needs_human_review`. Reservation and persisted-state replay happen before `auth.test`, so
+an existing success, unknown outcome, permanent failure, or review decision does not depend
+on current Slack availability. A known pre-transmission failure records
+`reconcile_not_before` using PostgreSQL time; `Retry-After` is bounded and persisted, and a
+five-second default prevents busy loops when no valid delay is supplied. Before that time,
+replay makes no Slack call. An ambiguous write—such as a response lost after transmission or
+a malformed 2xx response—is `outcome_unknown` and is never automatically resent because
+this checkpoint does not request Slack history scopes or pretend it can reconcile delivery.
+Slack failure does not erase, reverse, or misrepresent confirmed GitHub success.
 
 Cancellation before the Slack write prevents it. If Slack confirms success while customer
 cancellation is in flight, the fenced action ledger records provider truth before the task

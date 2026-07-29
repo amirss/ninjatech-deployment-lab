@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
@@ -102,6 +104,24 @@ def _response(
     )
 
 
+def _auth_payload(
+    *,
+    team_id: str = "T1234567890",
+    user_id: str = "U1234567890",
+    bot_id: str = "B1234567890",
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "team_id": team_id,
+        "user_id": user_id,
+        "bot_id": bot_id,
+    }
+
+
+def _authorized_http(*responses: JsonHttpResponse) -> _Http:
+    return _Http([_response(_auth_payload()), *responses])
+
+
 def _client(http: _Http, settings: Settings | None = None) -> SlackClient:
     configured = settings or _settings()
     return SlackClient(
@@ -113,6 +133,14 @@ def _client(http: _Http, settings: Settings | None = None) -> SlackClient:
         ),
         settings=configured,
     )
+
+
+async def _post_with_identity(
+    client: SlackClient,
+    request: SlackMessageRequest,
+) -> SlackMessageReceipt:
+    assert await client.verify_identity(correlation_id="request") is True
+    return await client.post_notification(request, correlation_id="request")
 
 
 def _decision() -> DeploymentContextDecision:
@@ -150,7 +178,9 @@ def _github_action(*, revision: int = 1) -> ExternalActionReference:
         operation="upsert_deployment_context_comment",
         revision=revision,
         provider_resource_identifier="1000",
-        provider_url="https://github.example/customer/example-service/issues/42#comment-1000",
+        provider_url=(
+            "https://github.example/customer/example-service/issues/42#issuecomment-1000"
+        ),
     )
 
 
@@ -193,23 +223,107 @@ def test_slack_mounted_credential_path_must_be_absolute() -> None:
 
 
 def test_slack_identity_uses_exact_opaque_ids_and_is_cached() -> None:
-    http = _Http(
-        [
-            _response(
-                {
-                    "ok": True,
-                    "team_id": "T1234567890",
-                    "user_id": "U1234567890",
-                    "bot_id": "B1234567890",
-                }
-            )
-        ]
-    )
+    http = _Http([_response(_auth_payload())])
     client = _client(http)
     assert asyncio.run(client.verify_identity(correlation_id="request-1")) is True
     assert asyncio.run(client.verify_identity(correlation_id="request-2")) is True
     assert len(http.calls) == 1
     assert http.calls[0]["operation"] is MetricOperation.IDENTITY
+
+
+def test_slack_identity_cache_tracks_rotated_mounted_credential(
+    tmp_path: Path,
+) -> None:
+    credential_path = tmp_path / "slack-token"
+    credential_path.write_text("token-a", encoding="utf-8")
+    configured = _settings(slack_bot_token=None, slack_bot_token_file=credential_path)
+    http = _Http(
+        [
+            _response(_auth_payload()),
+            _response(_auth_payload(team_id="T0000000000")),
+        ]
+    )
+    client = SlackClient(
+        http=cast(Any, http),
+        base_url=configured.slack_base_url,
+        credential=EnvironmentOrFileCredential(value=None, path=credential_path),
+        settings=configured,
+    )
+
+    assert asyncio.run(client.verify_identity(correlation_id="first")) is True
+    assert asyncio.run(client.verify_identity(correlation_id="cached")) is True
+    assert len(http.calls) == 1
+
+    credential_path.write_text("token-b", encoding="utf-8")
+    with pytest.raises(SlackRetryableFailure, match="Slack operation failed"):
+        asyncio.run(
+            client.post_notification(
+                SlackMessageRequest(channel="C1234567890", text="bounded"),
+                correlation_id="rotated-before-verification",
+            )
+        )
+    assert len(http.calls) == 1
+
+    assert asyncio.run(client.verify_identity(correlation_id="rotated")) is False
+    with pytest.raises(SlackRetryableFailure, match="Slack operation failed"):
+        asyncio.run(
+            client.post_notification(
+                SlackMessageRequest(channel="C1234567890", text="bounded"),
+                correlation_id="rotated",
+            )
+        )
+    assert len(http.calls) == 2
+    assert all(call["operation"] is MetricOperation.IDENTITY for call in http.calls)
+
+
+def test_slack_identity_cache_includes_expected_principal() -> None:
+    http = _Http(
+        [
+            _response(_auth_payload()),
+            _response(_auth_payload(team_id="T0000000000")),
+        ]
+    )
+    client = _client(http)
+    assert asyncio.run(client.verify_identity(correlation_id="first")) is True
+    client._expected_team_id = "T0000000000"
+    assert asyncio.run(client.verify_identity(correlation_id="changed-principal")) is True
+    assert len(http.calls) == 2
+
+
+def test_slack_identity_errors_never_expose_token_or_fingerprint(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    token = "mounted-secret-never-expose"
+    fingerprint = hashlib.sha256(token.encode()).hexdigest()
+    credential_path = tmp_path / "slack-token"
+    credential_path.write_text(token, encoding="utf-8")
+    configured = _settings(slack_bot_token=None, slack_bot_token_file=credential_path)
+    client = SlackClient(
+        http=cast(Any, _Http([_response({"ok": False, "error": "invalid_auth"})])),
+        base_url=configured.slack_base_url,
+        credential=EnvironmentOrFileCredential(value=None, path=credential_path),
+        settings=configured,
+    )
+    with pytest.raises(SlackPermanentFailure) as captured:
+        asyncio.run(client.verify_identity(correlation_id="request"))
+    rendered = f"{captured.value} {caplog.text}"
+    assert token not in rendered
+    assert fingerprint not in rendered
+
+
+def test_missing_slack_credential_cannot_reuse_identity_cache() -> None:
+    configured = _settings()
+    client = SlackClient(
+        http=cast(Any, _Http([])),
+        base_url=configured.slack_base_url,
+        credential=EnvironmentOrFileCredential(value=None, path=None),
+        settings=configured,
+    )
+    with pytest.raises(SlackPermanentFailure) as captured:
+        asyncio.run(client.verify_identity(correlation_id="request"))
+    assert captured.value.error_code == "slack_credential_missing"
+    assert str(captured.value) == "Slack operation failed"
 
 
 @pytest.mark.parametrize(
@@ -263,6 +377,7 @@ def test_message_rendering_is_deterministic_bounded_and_accessible() -> None:
     assert first == second
     assert first.startswith("Deployment context sync\nDecision: ready")
     assert "payments-api" in first
+    assert "#issuecomment-1000" in first
     assert "GitHub revision: 1" in first
     assert len(first.encode()) <= 4000
     with pytest.raises(ValueError):
@@ -288,6 +403,7 @@ def test_slack_request_disables_unfurling_and_has_no_metadata() -> None:
 def test_slack_business_scope_varies_only_with_business_identity() -> None:
     base = slack_action_scope_key(
         deployment_scope_id="test-scope",
+        expected_team_id="T1234567890",
         github_repository_id=424242,
         github_issue_number=42,
         canonical_service_id="payments-api",
@@ -296,6 +412,7 @@ def test_slack_business_scope_varies_only_with_business_identity() -> None:
     )
     assert base == slack_action_scope_key(
         deployment_scope_id="test-scope",
+        expected_team_id="T1234567890",
         github_repository_id=424242,
         github_issue_number=42,
         canonical_service_id="payments-api",
@@ -304,6 +421,7 @@ def test_slack_business_scope_varies_only_with_business_identity() -> None:
     )
     assert base != slack_action_scope_key(
         deployment_scope_id="test-scope",
+        expected_team_id="T1234567890",
         github_repository_id=424242,
         github_issue_number=42,
         canonical_service_id="payments-api",
@@ -312,13 +430,26 @@ def test_slack_business_scope_varies_only_with_business_identity() -> None:
     )
     assert base != slack_action_scope_key(
         deployment_scope_id="test-scope",
+        expected_team_id="T1234567890",
         github_repository_id=424242,
         github_issue_number=42,
         canonical_service_id="payments-api",
         github_action_revision=1,
         channel_id="C0000000000",
     )
-    assert "task" not in base
+    other_team = slack_action_scope_key(
+        deployment_scope_id="test-scope",
+        expected_team_id="T0000000000",
+        github_repository_id=424242,
+        github_issue_number=42,
+        canonical_service_id="payments-api",
+        github_action_revision=1,
+        channel_id="C1234567890",
+    )
+    assert base != other_team
+    assert "slack_team:T1234567890" in base
+    for execution_identifier in ("task", "attempt", "worker", "token"):
+        assert execution_identifier not in base
 
 
 def test_slack_snapshot_is_order_independent_and_evidence_sensitive() -> None:
@@ -330,30 +461,39 @@ def test_slack_snapshot_is_order_independent_and_evidence_sensitive() -> None:
         decision=decision,
         github_action=_github_action(),
         channel_id="C1234567890",
+        expected_team_id="T1234567890",
     )
     second = slack_decision_snapshot_hash(
         decision=reversed_decision,
         github_action=_github_action(),
         channel_id="C1234567890",
+        expected_team_id="T1234567890",
     )
     assert first == second
     assert first != slack_decision_snapshot_hash(
         decision=decision,
         github_action=_github_action(revision=2),
         channel_id="C1234567890",
+        expected_team_id="T1234567890",
+    )
+    assert first != slack_decision_snapshot_hash(
+        decision=decision,
+        github_action=_github_action(),
+        channel_id="C1234567890",
+        expected_team_id="T0000000000",
     )
 
 
 def test_confirmed_slack_success_requires_exact_channel_and_timestamp() -> None:
-    http = _Http([_response({"ok": True, "channel": "C1234567890", "ts": "1.000001"})])
+    http = _authorized_http(_response({"ok": True, "channel": "C1234567890", "ts": "1.000001"}))
     receipt = asyncio.run(
-        _client(http).post_notification(
+        _post_with_identity(
+            _client(http),
             SlackMessageRequest(channel="C1234567890", text="bounded"),
-            correlation_id="request",
         )
     )
     assert receipt.provider_resource_identifier == "C1234567890:1.000001"
-    assert "metadata" not in cast(dict[str, object], http.calls[0]["json_body"])
+    assert "metadata" not in cast(dict[str, object], http.calls[1]["json_body"])
 
 
 @pytest.mark.parametrize(
@@ -369,9 +509,9 @@ def test_malformed_successful_slack_response_is_outcome_unknown(
 ) -> None:
     with pytest.raises(SlackOutcomeUnknown):
         asyncio.run(
-            _client(_Http([_response(payload)])).post_notification(
+            _post_with_identity(
+                _client(_authorized_http(_response(payload))),
                 SlackMessageRequest(channel="C1234567890", text="bounded"),
-                correlation_id="request",
             )
         )
 
@@ -379,11 +519,11 @@ def test_malformed_successful_slack_response_is_outcome_unknown(
 def test_slack_rate_limit_is_known_retryable_and_bounded() -> None:
     with pytest.raises(SlackRetryableFailure) as captured:
         asyncio.run(
-            _client(
-                _Http([_response(None, status=429, headers={"retry-after": "999"})])
-            ).post_notification(
+            _post_with_identity(
+                _client(
+                    _authorized_http(_response(None, status=429, headers={"retry-after": "999"}))
+                ),
                 SlackMessageRequest(channel="C1234567890", text="bounded"),
-                correlation_id="request",
             )
         )
     assert captured.value.error_code == "slack_rate_limited"
@@ -402,9 +542,9 @@ def test_slack_rate_limit_is_known_retryable_and_bounded() -> None:
 def test_slack_known_rejections_are_safely_classified(error: str, code: str) -> None:
     with pytest.raises(SlackPermanentFailure) as captured:
         asyncio.run(
-            _client(_Http([_response({"ok": False, "error": error})])).post_notification(
+            _post_with_identity(
+                _client(_authorized_http(_response({"ok": False, "error": error}))),
                 SlackMessageRequest(channel="C1234567890", text="bounded"),
-                correlation_id="request",
             )
         )
     assert captured.value.error_code == code
@@ -453,12 +593,20 @@ class _Notifier:
     outcome: SlackMessageReceipt | Exception
     customer_cancellation: asyncio.Event | None = None
     ownership_lost: asyncio.Event | None = None
-    identity: bool = True
+    identity: bool | Exception = True
+    identity_customer_cancellation: asyncio.Event | None = None
+    identity_ownership_lost: asyncio.Event | None = None
     identity_calls: int = 0
     post_calls: int = 0
 
     async def verify_identity(self, *, correlation_id: str) -> bool:
         self.identity_calls += 1
+        if self.identity_customer_cancellation is not None:
+            self.identity_customer_cancellation.set()
+        if self.identity_ownership_lost is not None:
+            self.identity_ownership_lost.set()
+        if isinstance(self.identity, Exception):
+            raise self.identity
         return self.identity
 
     async def post_notification(
@@ -503,6 +651,8 @@ class _Actions:
             self.action.completed_at = now
         self.reserve_kind = ActionReservationKind.REPLAY
         self.transitions: list[ExternalActionStatus] = []
+        self.transition_calls: list[dict[str, Any]] = []
+        self.delay_seconds = 0.0
 
     async def reserve_or_get(self, **kwargs: Any) -> ActionReservation:
         self.action.action_scope_key = cast(str, kwargs["action_scope_key"])
@@ -519,6 +669,14 @@ class _Actions:
         **kwargs: Any,
     ) -> ExternalAction:
         self.transitions.append(new_status)
+        self.transition_calls.append(
+            {
+                "new_status": new_status,
+                "values": values,
+                "error_code": error_code,
+                **kwargs,
+            }
+        )
         self.action.status = new_status.value
         self.action.last_error_code = error_code
         for key, value in (values or {}).items():
@@ -526,6 +684,9 @@ class _Actions:
         if new_status is ExternalActionStatus.SUCCEEDED:
             self.action.completed_at = datetime.now(UTC)
         return self.action
+
+    async def reconciliation_delay_seconds(self, action_id: object) -> float:
+        return self.delay_seconds
 
 
 def _execution_context(
@@ -586,7 +747,10 @@ def _delivery(
 
 
 def test_succeeded_slack_action_replays_without_posting() -> None:
-    notifier = _Notifier(SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"))
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"),
+        identity=SlackRetryableFailure("slack_identity_unavailable"),
+    )
     actions = _Actions(status=ExternalActionStatus.SUCCEEDED)
     task, context = _execution_context()
     result = asyncio.run(
@@ -599,6 +763,7 @@ def test_succeeded_slack_action_replays_without_posting() -> None:
     assert result.state is SlackDeliveryState.SUCCEEDED
     assert result.action is not None
     assert result.action.provider_resource_identifier == "C1234567890:1.000001"
+    assert notifier.identity_calls == 0
     assert notifier.post_calls == 0
 
 
@@ -643,7 +808,10 @@ def test_slack_failures_are_degraded_and_truthfully_persisted(
 
 
 def test_unknown_slack_outcome_is_never_blindly_reposted() -> None:
-    notifier = _Notifier(SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"))
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"),
+        identity=SlackRetryableFailure("slack_identity_unavailable"),
+    )
     actions = _Actions(status=ExternalActionStatus.OUTCOME_UNKNOWN)
     actions.action.last_error_code = "slack_write_outcome_unknown"
     task, context = _execution_context()
@@ -655,6 +823,149 @@ def test_unknown_slack_outcome_is_never_blindly_reposted() -> None:
         )
     )
     assert result.state is SlackDeliveryState.OUTCOME_UNKNOWN
+    assert notifier.identity_calls == 0
+    assert notifier.post_calls == 0
+
+
+def test_persisted_permanent_failure_replays_without_slack_access() -> None:
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"),
+        identity=SlackRetryableFailure("slack_identity_unavailable"),
+    )
+    actions = _Actions(status=ExternalActionStatus.PERMANENT_FAILURE)
+    actions.action.last_error_code = "slack_channel_not_found"
+    task, context = _execution_context()
+    result = asyncio.run(
+        _delivery(notifier, actions).deliver(
+            task=task,
+            context=context,
+            request=_delivery_request(),
+        )
+    )
+    assert result.state is SlackDeliveryState.PERMANENT_FAILURE
+    assert result.safe_error_code == "slack_channel_not_found"
+    assert notifier.identity_calls == 0
+    assert notifier.post_calls == 0
+
+
+def test_retryable_action_waits_for_database_not_before_without_slack_access() -> None:
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="2.000001"),
+        identity=SlackRetryableFailure("slack_identity_unavailable"),
+    )
+    actions = _Actions(status=ExternalActionStatus.RETRYABLE_FAILURE)
+    actions.action.last_error_code = "slack_rate_limited"
+    actions.delay_seconds = 30.0
+    task, context = _execution_context()
+    result = asyncio.run(
+        _delivery(notifier, actions).deliver(
+            task=task,
+            context=context,
+            request=_delivery_request(),
+        )
+    )
+    assert result.state is SlackDeliveryState.RETRYABLE_FAILURE
+    assert result.safe_error_code == "slack_rate_limited"
+    assert notifier.identity_calls == 0
+    assert notifier.post_calls == 0
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        True,
+        False,
+        SlackRetryableFailure("slack_identity_unavailable"),
+        SlackPermanentFailure("slack_auth_rejected"),
+    ],
+)
+def test_customer_cancellation_during_identity_never_degrades_or_posts(
+    identity: bool | Exception,
+) -> None:
+    cancellation = asyncio.Event()
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="1.000001"),
+        identity=identity,
+        identity_customer_cancellation=cancellation,
+    )
+    actions = _Actions()
+    task, context = _execution_context(customer_cancellation=cancellation)
+    with pytest.raises(TaskCancelled):
+        asyncio.run(
+            _delivery(notifier, actions).deliver(
+                task=task,
+                context=context,
+                request=_delivery_request(),
+            )
+        )
+    assert actions.transitions == []
+    assert notifier.identity_calls == 1
+    assert notifier.post_calls == 0
+
+
+def test_ownership_loss_during_identity_blocks_action_mutation_and_post() -> None:
+    ownership = asyncio.Event()
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="1.000001"),
+        identity_ownership_lost=ownership,
+    )
+    actions = _Actions()
+    task, context = _execution_context(ownership_lost=ownership)
+    with pytest.raises(OwnershipLostError):
+        asyncio.run(
+            _delivery(notifier, actions).deliver(
+                task=task,
+                context=context,
+                request=_delivery_request(),
+            )
+        )
+    assert actions.transitions == []
+    assert notifier.identity_calls == 1
+    assert notifier.post_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("identity", "expected_state", "expected_status"),
+    [
+        (
+            SlackRetryableFailure("slack_identity_unavailable"),
+            SlackDeliveryState.RETRYABLE_FAILURE,
+            ExternalActionStatus.RETRYABLE_FAILURE,
+        ),
+        (
+            SlackPermanentFailure("slack_auth_rejected"),
+            SlackDeliveryState.PERMANENT_FAILURE,
+            ExternalActionStatus.PERMANENT_FAILURE,
+        ),
+        (
+            False,
+            SlackDeliveryState.NEEDS_HUMAN_REVIEW,
+            ExternalActionStatus.NEEDS_HUMAN_REVIEW,
+        ),
+    ],
+)
+def test_identity_failure_without_cancellation_is_persisted_degradation(
+    identity: bool | Exception,
+    expected_state: SlackDeliveryState,
+    expected_status: ExternalActionStatus,
+) -> None:
+    notifier = _Notifier(
+        SlackMessageReceipt(channel="C1234567890", timestamp="1.000001"),
+        identity=identity,
+    )
+    actions = _Actions()
+    task, context = _execution_context()
+    github_action = _delivery_request().github_action
+    result = asyncio.run(
+        _delivery(notifier, actions).deliver(
+            task=task,
+            context=context,
+            request=_delivery_request(),
+        )
+    )
+    assert result.state is expected_state
+    assert ExternalActionStatus(actions.action.status) is expected_status
+    assert github_action.provider_resource_identifier == "1000"
     assert notifier.post_calls == 0
 
 
@@ -727,6 +1038,7 @@ def test_ownership_loss_after_slack_acceptance_blocks_stale_finalization() -> No
         )
     )
     assert result.state is SlackDeliveryState.OUTCOME_UNKNOWN
+    assert replacement.identity_calls == 0
     assert replacement.post_calls == 0
 
 

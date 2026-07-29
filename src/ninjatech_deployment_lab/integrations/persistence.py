@@ -292,7 +292,14 @@ class ExternalActionRepository:
         values: dict[str, Any] | None = None,
         error_code: str | None = None,
         settlement_delay_seconds: float | None = None,
+        not_before_delay_seconds: float | None = None,
     ) -> ExternalAction:
+        if settlement_delay_seconds is not None and not_before_delay_seconds is not None:
+            raise ValueError("a transition cannot set both write settlement and retry delays")
+        if (settlement_delay_seconds is not None and settlement_delay_seconds < 0) or (
+            not_before_delay_seconds is not None and not_before_delay_seconds < 0
+        ):
+            raise ValueError("external action delays must not be negative")
         async with self._session_factory() as session:
             async with session.begin():
                 now = await _database_now(session)
@@ -323,6 +330,10 @@ class ExternalActionRepository:
                     update_values["write_started_at"] = now
                     update_values["reconcile_not_before"] = now + timedelta(
                         seconds=settlement_delay_seconds
+                    )
+                if not_before_delay_seconds is not None:
+                    update_values["reconcile_not_before"] = now + timedelta(
+                        seconds=not_before_delay_seconds
                     )
                 result = cast(
                     CursorResult[Any],
@@ -448,7 +459,7 @@ class ExternalActionRepository:
             ).scalar_one()
 
     async def reconciliation_delay_seconds(self, action_id: UUID) -> float:
-        """Use PostgreSQL time to avoid application-clock skew in write holdoff."""
+        """Return the database-authoritative delay before another action attempt."""
         async with self._session_factory() as session:
             delay = (
                 await session.execute(

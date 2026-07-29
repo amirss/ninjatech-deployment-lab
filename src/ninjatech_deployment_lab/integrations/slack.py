@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 import time
@@ -54,6 +55,7 @@ _IDENTITY_CACHE_SECONDS = 300.0
 _MAX_MESSAGE_BYTES = 4000
 _MAX_MESSAGE_LINES = 6
 _MAX_URL_CHARS = 2000
+_DEFAULT_RETRY_DELAY_SECONDS = 5.0
 
 
 class SlackError(Exception):
@@ -79,6 +81,15 @@ class SlackIdentity(StrictModel):
     team_id: str = Field(min_length=1, max_length=255)
     user_id: str = Field(min_length=1, max_length=255)
     bot_id: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+@dataclass(frozen=True, slots=True)
+class _SlackIdentityCache:
+    credential_fingerprint: bytes
+    expected_team_id: str | None
+    expected_user_id: str | None
+    expected_bot_id: str | None
+    verified_until: float
 
 
 class SlackMessageRequest(StrictModel):
@@ -131,10 +142,11 @@ class SlackClient:
         self._expected_bot_id = settings.slack_expected_bot_id
         self._write_timeout = settings.slack_write_timeout_seconds
         self._maximum_retry_after = settings.integration_max_retry_after_seconds
-        self._identity_verified_until = 0.0
+        self._identity_cache: _SlackIdentityCache | None = None
 
     async def verify_identity(self, *, correlation_id: str) -> bool:
-        if time.monotonic() < self._identity_verified_until:
+        token, credential_fingerprint = self._current_credential()
+        if self._cache_authorizes(credential_fingerprint):
             return True
         try:
             response = await self._request(
@@ -143,6 +155,7 @@ class SlackClient:
                 correlation_id=correlation_id,
                 write=False,
                 operation=MetricOperation.IDENTITY,
+                token=token,
             )
         except RetryableHttpError:
             raise SlackRetryableFailure("slack_identity_unavailable") from None
@@ -160,7 +173,15 @@ class SlackClient:
             and (self._expected_bot_id is None or identity.bot_id == self._expected_bot_id)
         )
         if valid:
-            self._identity_verified_until = time.monotonic() + _IDENTITY_CACHE_SECONDS
+            self._identity_cache = _SlackIdentityCache(
+                credential_fingerprint=credential_fingerprint,
+                expected_team_id=self._expected_team_id,
+                expected_user_id=self._expected_user_id,
+                expected_bot_id=self._expected_bot_id,
+                verified_until=time.monotonic() + _IDENTITY_CACHE_SECONDS,
+            )
+        else:
+            self._identity_cache = None
         return valid
 
     async def post_notification(
@@ -169,6 +190,9 @@ class SlackClient:
         *,
         correlation_id: str,
     ) -> SlackMessageReceipt:
+        token, credential_fingerprint = self._current_credential()
+        if not self._cache_authorizes(credential_fingerprint):
+            raise SlackRetryableFailure("slack_identity_verification_required")
         try:
             response = await self._request(
                 path="chat.postMessage",
@@ -176,6 +200,7 @@ class SlackClient:
                 correlation_id=correlation_id,
                 write=True,
                 operation=MetricOperation.WRITE,
+                token=token,
             )
         except AmbiguousWriteError:
             raise SlackOutcomeUnknown("slack_write_outcome_unknown") from None
@@ -226,10 +251,8 @@ class SlackClient:
         correlation_id: str,
         write: bool,
         operation: MetricOperation,
+        token: str,
     ) -> JsonHttpResponse:
-        token = self._credential.get_secret()
-        if token is None:
-            raise SlackPermanentFailure("slack_credential_missing")
         return await self._http.request_json(
             method="POST",
             base_url=self._base_url,
@@ -244,6 +267,26 @@ class SlackClient:
             timeout_seconds=self._write_timeout if write else None,
             provider=MetricProvider.SLACK,
             operation=operation,
+        )
+
+    def _current_credential(self) -> tuple[str, bytes]:
+        try:
+            token = self._credential.get_secret()
+        except (OSError, ValueError):
+            raise SlackPermanentFailure("slack_credential_missing") from None
+        if token is None or not token:
+            raise SlackPermanentFailure("slack_credential_missing")
+        return token, hashlib.sha256(token.encode()).digest()
+
+    def _cache_authorizes(self, credential_fingerprint: bytes) -> bool:
+        cache = self._identity_cache
+        return (
+            cache is not None
+            and time.monotonic() < cache.verified_until
+            and credential_fingerprint == cache.credential_fingerprint
+            and self._expected_team_id == cache.expected_team_id
+            and self._expected_user_id == cache.expected_user_id
+            and self._expected_bot_id == cache.expected_bot_id
         )
 
     def _classify_read_response(
@@ -302,30 +345,6 @@ class SlackDeliveryService:
         request: SlackDeliveryRequest,
     ) -> SlackNotificationResult:
         context.raise_if_cancelled()
-        try:
-            identity_verified = await self._notifier.verify_identity(
-                correlation_id=str(task.task_id)
-            )
-        except SlackRetryableFailure as error:
-            return self._result(
-                SlackDeliveryState.RETRYABLE_FAILURE,
-                action=None,
-                error_code=error.error_code,
-            )
-        except SlackPermanentFailure as error:
-            return self._result(
-                SlackDeliveryState.PERMANENT_FAILURE,
-                action=None,
-                error_code=error.error_code,
-            )
-        if not identity_verified:
-            return self._result(
-                SlackDeliveryState.NEEDS_HUMAN_REVIEW,
-                action=None,
-                error_code="slack_identity_mismatch",
-            )
-
-        context.raise_if_cancelled()
         message = render_slack_notification(
             decision=request.decision,
             canonical_service_id=request.canonical_service_id,
@@ -338,6 +357,7 @@ class SlackDeliveryService:
         )
         scope = slack_action_scope_key(
             deployment_scope_id=self._settings.deployment_scope_id,
+            expected_team_id=self._settings.slack_expected_team_id,
             github_repository_id=request.github_repository_id,
             github_issue_number=request.github_issue_number,
             canonical_service_id=request.canonical_service_id,
@@ -349,6 +369,7 @@ class SlackDeliveryService:
             decision=request.decision,
             github_action=request.github_action,
             channel_id=request.channel_id,
+            expected_team_id=self._settings.slack_expected_team_id,
         )
         reservation = await self._actions.reserve_or_get(
             fence=task.execution_fence,
@@ -408,6 +429,92 @@ class SlackDeliveryService:
                 error_code="slack_manual_reconciliation_required",
             )
 
+        if status is ExternalActionStatus.RETRYABLE_FAILURE:
+            delay_seconds = await self._actions.reconciliation_delay_seconds(action.id)
+            context.raise_if_cancelled()
+            if delay_seconds > 0:
+                return self._result(
+                    SlackDeliveryState.RETRYABLE_FAILURE,
+                    action=action,
+                    error_code=action.last_error_code or "slack_retry_not_ready",
+                )
+
+        context.raise_if_cancelled()
+        try:
+            identity_verified = await self._notifier.verify_identity(
+                correlation_id=str(task.task_id)
+            )
+        except SlackRetryableFailure as error:
+            context.raise_if_cancelled()
+            action = await self._actions.transition(
+                fence=task.execution_fence,
+                action_id=action.id,
+                expected_statuses={
+                    ExternalActionStatus.RESERVED,
+                    ExternalActionStatus.READY_TO_EXECUTE,
+                    ExternalActionStatus.RETRYABLE_FAILURE,
+                },
+                new_status=ExternalActionStatus.RETRYABLE_FAILURE,
+                transition="slack_identity_retryable_failure",
+                values={"write_started_at": None},
+                error_code=error.error_code,
+                not_before_delay_seconds=_known_unsent_delay(error),
+            )
+            context.raise_if_cancelled()
+            return self._result(
+                SlackDeliveryState.RETRYABLE_FAILURE,
+                action=action,
+                error_code=error.error_code,
+            )
+        except SlackPermanentFailure as error:
+            context.raise_if_cancelled()
+            action = await self._actions.transition(
+                fence=task.execution_fence,
+                action_id=action.id,
+                expected_statuses={
+                    ExternalActionStatus.RESERVED,
+                    ExternalActionStatus.READY_TO_EXECUTE,
+                    ExternalActionStatus.RETRYABLE_FAILURE,
+                },
+                new_status=ExternalActionStatus.PERMANENT_FAILURE,
+                transition="slack_identity_permanent_failure",
+                values={
+                    "write_started_at": None,
+                    "reconcile_not_before": None,
+                },
+                error_code=error.error_code,
+            )
+            context.raise_if_cancelled()
+            return self._result(
+                SlackDeliveryState.PERMANENT_FAILURE,
+                action=action,
+                error_code=error.error_code,
+            )
+        context.raise_if_cancelled()
+        if not identity_verified:
+            action = await self._actions.transition(
+                fence=task.execution_fence,
+                action_id=action.id,
+                expected_statuses={
+                    ExternalActionStatus.RESERVED,
+                    ExternalActionStatus.READY_TO_EXECUTE,
+                    ExternalActionStatus.RETRYABLE_FAILURE,
+                },
+                new_status=ExternalActionStatus.NEEDS_HUMAN_REVIEW,
+                transition="slack_identity_mismatch",
+                values={
+                    "write_started_at": None,
+                    "reconcile_not_before": None,
+                },
+                error_code="slack_identity_mismatch",
+            )
+            context.raise_if_cancelled()
+            return self._result(
+                SlackDeliveryState.NEEDS_HUMAN_REVIEW,
+                action=action,
+                error_code="slack_identity_mismatch",
+            )
+
         context.raise_if_cancelled()
         action = await self._actions.transition(
             fence=task.execution_fence,
@@ -435,7 +542,9 @@ class SlackDeliveryService:
                 expected_statuses={ExternalActionStatus.EXECUTING},
                 new_status=ExternalActionStatus.RETRYABLE_FAILURE,
                 transition="slack_retryable_failure",
+                values={"write_started_at": None},
                 error_code=error.error_code,
+                not_before_delay_seconds=_known_unsent_delay(error),
             )
             context.raise_if_cancelled()
             return self._result(
@@ -556,6 +665,7 @@ def render_slack_notification(
 def slack_action_scope_key(
     *,
     deployment_scope_id: str | None,
+    expected_team_id: str | None,
     github_repository_id: int,
     github_issue_number: int,
     canonical_service_id: str,
@@ -564,8 +674,11 @@ def slack_action_scope_key(
 ) -> str:
     if deployment_scope_id is None:
         raise ValueError("deployment scope is required")
+    if expected_team_id is None:
+        raise ValueError("expected Slack team is required")
     return (
-        f"{WORKFLOW_VERSION}:{deployment_scope_id}:{github_repository_id}:"
+        f"{WORKFLOW_VERSION}:{deployment_scope_id}:slack_team:{expected_team_id}:"
+        f"{github_repository_id}:"
         f"{github_issue_number}:{canonical_service_id}:"
         f"github_revision:{github_action_revision}:"
         f"slack_channel:{channel_id}:notification"
@@ -577,7 +690,10 @@ def slack_decision_snapshot_hash(
     decision: DeploymentContextDecision,
     github_action: ExternalActionReference,
     channel_id: str,
+    expected_team_id: str | None,
 ) -> str:
+    if expected_team_id is None:
+        raise ValueError("expected Slack team is required")
     references = sorted(
         decision.source_references,
         key=lambda reference: (
@@ -610,6 +726,7 @@ def slack_decision_snapshot_hash(
                 "provider_resource_identifier": (github_action.provider_resource_identifier),
                 "revision": github_action.revision,
             },
+            "slack_team": expected_team_id,
             "channel": channel_id,
         }
     )
@@ -680,6 +797,13 @@ def _retry_after(headers: Mapping[str, str], *, maximum: float) -> float | None:
         return min(max(float(value), 0.0), maximum)
     except ValueError:
         return None
+
+
+def _known_unsent_delay(error: SlackRetryableFailure) -> float:
+    """Prevent busy-loop retries when Slack supplies no usable Retry-After value."""
+    if error.retry_after_seconds is None:
+        return _DEFAULT_RETRY_DELAY_SECONDS
+    return max(1.0, error.retry_after_seconds)
 
 
 def _action_reference(action: ExternalAction) -> ExternalActionReference:

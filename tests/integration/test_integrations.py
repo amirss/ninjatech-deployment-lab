@@ -274,7 +274,9 @@ def _slack_request() -> SlackDeliveryRequest:
             operation=ExternalActionOperation.UPSERT_DEPLOYMENT_CONTEXT_COMMENT.value,
             revision=1,
             provider_resource_identifier="1000",
-            provider_url=("https://github.example/customer/example-service/issues/42#comment-1000"),
+            provider_url=(
+                "https://github.example/customer/example-service/issues/42#issuecomment-1000"
+            ),
         ),
         decision=_decision(),
     )
@@ -540,6 +542,7 @@ def test_slack_success_is_reused_by_an_independent_task(
             assert first_result.action is not None
             assert second_result.action is not None
             assert first_result.action.action_id == second_result.action.action_id
+            assert notifier.identity_calls == 1
             assert notifier.post_calls == 1
             async with second_factory() as session:
                 slack_actions = (
@@ -603,6 +606,7 @@ def test_slack_unknown_outcome_is_persisted_and_never_reposted(
             )
             assert first_result.state is SlackDeliveryState.OUTCOME_UNKNOWN
             assert second_result.state is SlackDeliveryState.OUTCOME_UNKNOWN
+            assert notifier.identity_calls == 1
             assert notifier.post_calls == 1
             assert first_result.action is not None
             persisted = await actions.get(first_result.action.action_id)
@@ -615,7 +619,7 @@ def test_slack_unknown_outcome_is_persisted_and_never_reposted(
     asyncio.run(scenario())
 
 
-def test_known_unsent_slack_failure_can_be_safely_retried(
+def test_slack_rate_limit_persists_not_before_and_retries_after_database_time(
     postgres_database_url: str,
     clean_tasks: None,
 ) -> None:
@@ -633,7 +637,10 @@ def test_known_unsent_slack_failure_can_be_safely_retried(
         try:
             actions = ExternalActionRepository(first_factory)
             failed_notifier = _SlackNotifier(
-                outcome=SlackRetryableFailure("slack_write_pretransmission_failure")
+                outcome=SlackRetryableFailure(
+                    "slack_rate_limited",
+                    retry_after_seconds=30,
+                )
             )
             failed = await _slack_delivery(
                 settings=_slack_settings(postgres_database_url),
@@ -649,6 +656,11 @@ def test_known_unsent_slack_failure_can_be_safely_retried(
                 request=_slack_request(),
             )
             assert failed.state is SlackDeliveryState.RETRYABLE_FAILURE
+            assert failed.action is not None
+            failed_action = await actions.get(failed.action.action_id)
+            assert failed_action.write_started_at is None
+            assert failed_action.reconcile_not_before is not None
+            assert await actions.reconciliation_delay_seconds(failed_action.id) > 0
 
             successful_notifier = _SlackNotifier(
                 outcome=SlackMessageReceipt(
@@ -669,8 +681,40 @@ def test_known_unsent_slack_failure_can_be_safely_retried(
                 ),
                 request=_slack_request(),
             )
-            assert succeeded.state is SlackDeliveryState.SUCCEEDED
+            assert succeeded.state is SlackDeliveryState.RETRYABLE_FAILURE
             assert failed_notifier.post_calls == 1
+            assert successful_notifier.identity_calls == 0
+            assert successful_notifier.post_calls == 0
+
+            async with first_factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        update(ExternalAction)
+                        .where(ExternalAction.id == failed_action.id)
+                        .values(
+                            reconcile_not_before=(
+                                func.clock_timestamp() - text("interval '1 second'")
+                            )
+                        )
+                    )
+
+            later = await _slack_delivery(
+                settings=_slack_settings(postgres_database_url),
+                notifier=successful_notifier,
+                actions=actions,
+            ).deliver(
+                task=_task_execution(second),
+                context=_handler_context(
+                    second,
+                    customer_cancellation=asyncio.Event(),
+                    ownership_lost=asyncio.Event(),
+                ),
+                request=_slack_request(),
+            )
+            assert later.state is SlackDeliveryState.SUCCEEDED
+            assert later.action is not None
+            assert later.action.action_id == failed_action.id
+            assert successful_notifier.identity_calls == 1
             assert successful_notifier.post_calls == 1
         finally:
             await first_engine.dispose()
