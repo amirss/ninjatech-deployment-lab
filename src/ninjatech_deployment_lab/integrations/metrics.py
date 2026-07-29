@@ -27,6 +27,15 @@ class MetricName(StrEnum):
     DUPLICATE_ACTION_PREVENTION_COUNT = "duplicate_action_prevention_count"
     SLACK_DELIVERY_STATE_COUNT = "slack_delivery_state_count"
     OUTCOME_UNKNOWN_COUNT = "outcome_unknown_count"
+    MODEL_REQUEST_COUNT = "model_request_count"
+    MODEL_LATENCY_SECONDS = "model_latency_seconds"
+    AGENT_STEP_COUNT = "agent_step_count"
+    REPOSITORY_TOOL_CALL_COUNT = "repository_tool_call_count"
+    PROPOSAL_OUTCOME_COUNT = "proposal_outcome_count"
+    MODEL_REFUSAL_COUNT = "model_refusal_count"
+    MODEL_GUARDRAIL_REJECTION_COUNT = "model_guardrail_rejection_count"
+    SOURCE_DRIFT_COUNT = "source_drift_count"
+    CONTEXT_BUDGET_EXHAUSTION_COUNT = "context_budget_exhaustion_count"
 
 
 class MetricLabel(StrEnum):
@@ -36,6 +45,8 @@ class MetricLabel(StrEnum):
     DECISION = "decision"
     ACTION_STATUS = "action_status"
     DELIVERY_STATE = "delivery_state"
+    PROPOSAL_OUTCOME = "proposal_outcome"
+    TOOL = "tool"
 
 
 class MetricOperation(StrEnum):
@@ -45,6 +56,8 @@ class MetricOperation(StrEnum):
     WRITE = "write"
     GITHUB_COMMENT = "upsert_deployment_context_comment"
     SLACK_NOTIFICATION = "post_deployment_context_notification"
+    MODEL_COMPLETE = "model_complete"
+    PROPOSAL_VALIDATE = "proposal_validate"
 
 
 class MetricProvider(StrEnum):
@@ -52,6 +65,19 @@ class MetricProvider(StrEnum):
     JIRA = "jira"
     GITHUB = "github"
     SLACK = "slack"
+    RECORDED = "recorded"
+    OPENAI = "openai"
+
+
+class MetricProposalOutcome(StrEnum):
+    PROPOSED = "proposed"
+    NEEDS_HUMAN_REVIEW = "needs_human_review"
+    REFUSED = "refused"
+
+
+class MetricTool(StrEnum):
+    SEARCH_PATHS = "search_repository_paths"
+    READ_FILES = "read_repository_files"
 
 
 class MetricOutcome(StrEnum):
@@ -102,6 +128,19 @@ _EXPECTED_LABELS: dict[MetricName, frozenset[MetricLabel]] = {
     ),
     MetricName.SLACK_DELIVERY_STATE_COUNT: frozenset({MetricLabel.DELIVERY_STATE}),
     MetricName.OUTCOME_UNKNOWN_COUNT: frozenset({MetricLabel.PROVIDER, MetricLabel.OPERATION}),
+    MetricName.MODEL_REQUEST_COUNT: frozenset(
+        {MetricLabel.PROVIDER, MetricLabel.OPERATION, MetricLabel.OUTCOME}
+    ),
+    MetricName.MODEL_LATENCY_SECONDS: frozenset(
+        {MetricLabel.PROVIDER, MetricLabel.OPERATION, MetricLabel.OUTCOME}
+    ),
+    MetricName.AGENT_STEP_COUNT: frozenset({MetricLabel.OUTCOME}),
+    MetricName.REPOSITORY_TOOL_CALL_COUNT: frozenset({MetricLabel.TOOL, MetricLabel.OUTCOME}),
+    MetricName.PROPOSAL_OUTCOME_COUNT: frozenset({MetricLabel.PROPOSAL_OUTCOME}),
+    MetricName.MODEL_REFUSAL_COUNT: frozenset({MetricLabel.PROVIDER}),
+    MetricName.MODEL_GUARDRAIL_REJECTION_COUNT: frozenset({MetricLabel.OUTCOME}),
+    MetricName.SOURCE_DRIFT_COUNT: frozenset({MetricLabel.OUTCOME}),
+    MetricName.CONTEXT_BUDGET_EXHAUSTION_COUNT: frozenset({MetricLabel.OUTCOME}),
 }
 
 _LABEL_TYPES: dict[MetricLabel, type[StrEnum]] = {
@@ -111,6 +150,8 @@ _LABEL_TYPES: dict[MetricLabel, type[StrEnum]] = {
     MetricLabel.DECISION: DecisionOutcome,
     MetricLabel.ACTION_STATUS: ExternalActionStatus,
     MetricLabel.DELIVERY_STATE: SlackDeliveryState,
+    MetricLabel.PROPOSAL_OUTCOME: MetricProposalOutcome,
+    MetricLabel.TOOL: MetricTool,
 }
 
 

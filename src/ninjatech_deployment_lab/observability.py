@@ -36,6 +36,8 @@ class JsonFormatter(logging.Formatter):
     extra_fields = (
         "action_id",
         "action_status",
+        "agent_run_id",
+        "agent_step_id",
         "attempt_id",
         "attempt_number",
         "artifact_id",

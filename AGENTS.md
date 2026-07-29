@@ -5,11 +5,14 @@
 This repository is the production foundation for the NinjaTech Enterprise Ticket-to-PR
 Agent. Milestone 4 adds one bounded, deterministic enterprise-integration workflow, an
 authoritative GitHub action ledger, and optional secondary Slack evidence to the reliable
-worker foundation.
+worker foundation. Milestone 5A1 adds disabled code-proposal domain and persistence
+foundations only.
 
-Do not add LLMs, agent frameworks, code generation, repository modification, Jira writes,
-authentication, frontend work, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or AWS
-infrastructure unless a later milestone explicitly authorizes it.
+Do not register `code_change_proposal`, add a live model provider, fetch repository
+contents, apply or execute patches, create branches/PRs, or add agent frameworks,
+repository modification, Jira writes, authentication, frontend work, Redis, Celery, Kafka,
+SQS, Kubernetes, Terraform, or AWS infrastructure unless a later milestone explicitly
+authorizes it.
 
 ## Engineering rules
 
@@ -144,6 +147,41 @@ secret storage.
   channel, resource, customer, URL, and error-message values are forbidden labels.
 - Metrics are process-local/log-oriented in this checkpoint; do not add a public endpoint or
   claim durable aggregation.
+
+## Disabled code-proposal foundation
+
+- No 5A1 class is registered in the worker. `RecordedModelProvider` is offline,
+  deterministic, and indexed by persisted completed-response evidence rather than process
+  memory. No live OpenAI provider or model call exists.
+- Model-facing evidence uses deterministic semantic handles, never source-artifact UUIDs,
+  task/attempt IDs, worker IDs, request IDs, or timestamps. Resolve handles internally and
+  persist citations with FK-backed source evidence.
+- Hash the full canonical prompt contract as well as its readable template version. Both
+  belong in semantic run scope so forgotten version bumps cannot replay an incompatible
+  run.
+- Treat tickets and repository text as untrusted. Scan high-confidence credential patterns
+  before egress; never silently redact and continue. Prompt injection remains bounded, not
+  solved.
+- Repository manifests are exact-commit, read-only evidence. Reject traversal, symlinks,
+  submodules, binary/secret/generated paths, incomplete trees, and Unicode/case/file-tree
+  identity collisions.
+- Enforce every context, tool, step, output, proposal, file, and diff budget in code.
+  Customer policy may lower an application limit but never raise it.
+- Store bounded action/tool summaries in `agent_steps`; never store raw prompts, source,
+  provider responses, hidden reasoning, or unvalidated proposals there. Store a validated
+  proposal only on a completed `agent_run`.
+- Reserve semantic runs by globally unique `run_scope_key`. Active owners stay exclusive;
+  expired/interrupted runs may be rebound through a current task fence; completed runs
+  replay; failed runs remain terminal.
+- Fence every run mutation and step/source append with current task ownership. Use
+  PostgreSQL time for binding and retry eligibility, exact row counts, and one transaction
+  for run/step/source consistency.
+- The model confidence band is model self-assessment only. It never authorizes approval,
+  execution, or delivery.
+- A proposal is not an approved code change. Milestone 5B is required before patch
+  execution and 5C before branch or pull-request delivery.
+- Model calls are future cost/data-egress POSTs, not customer-system writes. A lost response
+  may duplicate model cost but is not a GitHub/Slack `outcome_unknown` side effect.
 
 ## Commands
 

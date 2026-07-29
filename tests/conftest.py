@@ -7,6 +7,11 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy import delete
 
+from ninjatech_deployment_lab.code_proposals.model import (
+    AgentRun,
+    AgentStep,
+    AgentStepSource,
+)
 from ninjatech_deployment_lab.config import Settings
 from ninjatech_deployment_lab.database import create_database_engine
 from ninjatech_deployment_lab.integrations.model import (
@@ -36,6 +41,9 @@ async def _clear_tasks(database_url: str) -> None:
     engine = create_database_engine(Settings(database_url=database_url, environment="test"))
     try:
         async with engine.begin() as connection:
+            await connection.execute(delete(AgentStepSource))
+            await connection.execute(delete(AgentStep))
+            await connection.execute(delete(AgentRun))
             await connection.execute(delete(ExternalActionAttempt))
             await connection.execute(delete(ExternalAction))
             await connection.execute(delete(SourceArtifact))

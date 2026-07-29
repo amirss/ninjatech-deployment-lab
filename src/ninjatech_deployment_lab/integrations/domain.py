@@ -68,6 +68,21 @@ class DataClassification(StrEnum):
     RESTRICTED = "restricted"
 
 
+class ModelProcessingProvider(StrEnum):
+    RECORDED = "recorded"
+    OPENAI = "openai"
+
+
+class ModelProcessingPolicy(StrictModel):
+    external_processing_allowed: bool
+    allowed_providers: tuple[ModelProcessingProvider, ...]
+    allowed_classifications: tuple[DataClassification, ...]
+    repository_source_egress_allowed: bool
+    maximum_context_bytes: int = Field(ge=1024, le=8388608)
+    human_review_required: bool
+    policy_version: int = Field(ge=1)
+
+
 class DecisionOutcome(StrEnum):
     READY = "ready"
     BLOCKED = "blocked"
@@ -152,6 +167,7 @@ class ServiceCatalogRecord(StrictModel):
     automatic_publication_allowed: bool
     required_reviewer: str | None = None
     allow_automatic_updates: bool = False
+    model_processing_policy: ModelProcessingPolicy | None = None
     source_version: str
     source_url: str
 

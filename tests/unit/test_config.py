@@ -91,3 +91,71 @@ def test_deployment_workflow_requires_expected_github_principal(
             deployment_allowed_jira_projects=("ENG",),
             github_expected_login=expected_login,
         )
+
+
+def test_recorded_proposal_foundation_needs_no_credential_or_egress_flag() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://user:pass@localhost/database",
+        environment="test",
+        enable_code_change_proposal=True,
+        model_provider="recorded",
+    )
+    assert settings.openai_api_key is None
+    assert not settings.enable_model_data_egress
+    assert settings.code_proposal_budgets().maximum_model_steps == 8
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_proposal_feature_remains_fail_closed_without_authentication(
+    environment: str,
+) -> None:
+    with pytest.raises(ValidationError, match="cannot be enabled"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@localhost/database",
+            environment=environment,
+            enable_code_change_proposal=True,
+        )
+
+
+def test_openai_provider_is_forbidden_in_test_and_ci() -> None:
+    base: dict[str, object] = {
+        "database_url": "postgresql+asyncpg://user:pass@localhost/database",
+        "enable_code_change_proposal": True,
+        "model_provider": "openai",
+        "model_name": "trusted-model",
+        "enable_model_data_egress": True,
+        "run_model_sandbox": True,
+        "openai_api_key": "test-only-placeholder",
+    }
+    with pytest.raises(ValidationError, match="ordinary test"):
+        Settings.model_validate({**base, "environment": "test"})
+    with pytest.raises(ValidationError, match="CI=true"):
+        Settings.model_validate({**base, "environment": "sandbox", "CI": True})
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://api.openai.com/v1",
+        "https://example.com/v1",
+        "https://user:password@api.openai.com/v1",
+        "https://api.openai.com/v1?query=unsafe",
+    ],
+)
+def test_future_openai_provider_accepts_only_official_https_host(
+    base_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(ValidationError, match="official HTTPS"):
+        Settings(
+            database_url="postgresql+asyncpg://user:pass@localhost/database",
+            environment="sandbox",
+            enable_code_change_proposal=True,
+            model_provider="openai",
+            model_name="trusted-model",
+            model_base_url=base_url,
+            enable_model_data_egress=True,
+            run_model_sandbox=True,
+            openai_api_key="test-only-placeholder",
+        )
