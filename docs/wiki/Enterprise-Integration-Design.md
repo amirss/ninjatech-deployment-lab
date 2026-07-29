@@ -1,10 +1,8 @@
 # Enterprise Integration Design
 
-Milestone 4 introduces the first customer-style workflow: a deterministic deployment-context synchronization process across an internal service catalog, GitHub, and Jira.
+Milestone 4 implements the first customer-style workflow: deterministic deployment-context synchronization across an internal service catalog, GitHub, Jira, and Slack.
 
-**Checkpoint 4A is implemented and verified.** Slack remains intentionally outside 4A and is planned as a secondary notification action in Checkpoint 4B.
-
-No LLM is involved yet. The objective is to prove safe enterprise integration before adding reasoning.
+**Both Checkpoint 4A and Checkpoint 4B are implemented and verified.** No LLM is involved. The objective is to prove safe enterprise integration and external-side-effect handling before adding reasoning.
 
 ## Customer scenario
 
@@ -15,9 +13,10 @@ A software company wants a bounded workflow that:
 3. reads one named Jira work item;
 4. produces a deterministic deployment-context decision;
 5. creates, updates, or reconciles one evidence-linked GitHub issue comment when policy allows;
-6. preserves minimized source and external-action evidence.
+6. optionally sends a secondary Slack notification;
+7. preserves minimized source, task-attempt, and external-action evidence.
 
-The result is one of:
+The business decision is one of:
 
 ```text
 ready
@@ -27,13 +26,13 @@ needs_human_review
 
 A blocked or review result is a successful guardrail outcome, not an execution failure.
 
-## Implemented policy-first workflow
+## Implemented workflow
 
 ```mermaid
 flowchart TD
-    I[Validate bounded task input and static allowlists] --> S[Fetch service-catalog policy]
+    I[Validate bounded input and static allowlists] --> S[Fetch service-catalog policy]
     S --> P{Policy decision}
-    P -->|blocked| B[Return blocked - no downstream fetch or write]
+    P -->|blocked| B[Return blocked - no downstream access]
     P -->|review required| R[Return needs human review]
     P -->|eligible| V[Verify configured GitHub principal]
     V --> G[Fetch and verify GitHub context]
@@ -45,107 +44,75 @@ flowchart TD
     C -->|existing verified action| E[Bind and replay]
     C -->|safe absence| W[Create or controlled-update comment]
     C -->|inconclusive| H[Human review]
-    E --> O[Structured task result]
-    W --> O
+    E --> Q{Slack requested?}
+    W --> Q
+    Q -->|no| O[Structured task result]
+    Q -->|yes| L[Reserve or replay workspace-scoped Slack action]
+    L -->|persisted result| O
+    L -->|new or eligible known-unsent action| I2[Verify current Slack identity]
+    I2 --> M[Post bounded notification]
+    M --> O
 ```
 
-The service catalog is checked before retrieving unnecessary customer data. It is the authority for:
-
-- service identity and aliases;
-- owner;
-- criticality;
-- data classification;
-- approved repositories;
-- policy version;
-- automatic-publication permission;
-- automatic-update permission;
-- required reviewer.
+The service catalog is checked before retrieving unnecessary customer data. It is the authority for service identity, owner, classification, approved repositories, policy version, automatic publication, automatic update, and reviewer requirements.
 
 Authority-bearing catalog records that disagree are not silently merged. They produce `needs_human_review`.
 
 ## Authority boundaries
 
-The implemented 4A workflow may:
+The workflow may:
 
 - read one configured service record;
-- verify one configured GitHub principal;
+- verify configured GitHub and Slack principals;
 - read one authorized GitHub repository and issue;
 - read one explicitly named Jira issue;
 - create or update one bounded GitHub comment;
-- persist normalized evidence and external-action history.
+- post one bounded Slack notification to an allowlisted channel;
+- persist normalized evidence and provider-action history.
 
 It may not:
 
 - accept arbitrary provider URLs;
-- access unapproved repositories or Jira projects;
+- access unapproved repositories, projects, services, or channels;
 - target a GitHub pull request through the issue endpoint;
 - modify source code;
 - create or merge pull requests;
 - deploy software;
 - change Jira state;
-- post arbitrary caller-supplied content;
+- post arbitrary caller-supplied text;
+- scan Slack history or delete Slack messages;
 - execute shell commands;
-- expose credentials or raw customer payloads;
-- publish to Slack in Checkpoint 4A.
+- expose credentials or raw customer payloads.
 
 The workflow is fail-closed in staging and production because inbound authentication and tenancy do not yet exist.
 
 ## Resource and principal identity
 
-Configuration requires the intended GitHub principal when the workflow is enabled. Before any write, the connector verifies that the credential resolves to that principal using a documented case-insensitive comparison.
+Trusted configuration defines the expected GitHub login, Slack workspace ID, Slack bot-user ID, optional Slack bot ID, and channel allowlist.
 
-Provider responses are also checked against the request:
+Before any write:
 
-- returned GitHub repository must match the requested repository;
-- returned GitHub issue number must match the requested issue number;
-- the target must be an issue, not a pull request;
-- returned Jira key must match the requested Jira key.
+- the GitHub credential must resolve to the configured principal;
+- the Slack credential must resolve to the configured workspace and bot identity;
+- returned GitHub repository and issue identities must match the request;
+- the GitHub target must be an issue, not a pull request;
+- the returned Jira key must match the requested Jira key.
 
-A mismatch cannot authorize or render an external action.
+Slack identity verification is cached only while the active credential fingerprint and expected principal values remain unchanged. Credential rotation invalidates the cache. Neither tokens nor fingerprints are logged, persisted, returned, or used as metric labels.
 
-## Normalized data
+## Normalized data and source provenance
 
 Provider payloads do not flow directly into policy or rendering.
 
 Strict models normalize:
 
-- Jira title, bounded ADF-derived description text, status, priority, labels, assignee ID, source version, and safe source URL;
+- Jira title, bounded ADF-derived description, status, priority, labels, assignee ID, source version, and safe source URL;
 - GitHub repository identity, numeric repository ID, archive state, default branch, head SHA, issue identity, target kind, and safe URLs;
-- service owner, tier, approved repositories, classification, policy version, publication authority, update authority, and reviewer requirement.
+- service owner, tier, repositories, classification, policy version, publication authority, update authority, and reviewer requirement.
 
-Messy source records are handled explicitly:
+`source_artifacts` stores decision-relevant normalized evidence rather than unbounded raw responses. Each artifact records provider identity, resource identity, source version, classification, redaction, finite JSON, content hash, serialized size, and retention timestamp.
 
-- aliases;
-- inconsistent casing;
-- missing optional values;
-- duplicate or conflicting service records;
-- stale policy;
-- malformed candidate records;
-- bounded pagination;
-- transient provider errors.
-
-## Source provenance
-
-`source_artifacts` stores normalized decision evidence rather than unbounded raw provider responses.
-
-Each artifact records:
-
-- task ID;
-- observing attempt ID;
-- provider and resource type;
-- provider resource ID;
-- safe canonical URL without query or fragment;
-- source version;
-- schema version;
-- data classification;
-- whether redaction was applied;
-- normalized finite JSON;
-- content hash and serialized size;
-- fetch and retention timestamps.
-
-Changed source content creates a new immutable artifact version. Identical observations replay the existing artifact.
-
-Retention is classification-aware, but automated deletion is not yet implemented and remains an explicit production gap.
+Changed source content creates a new immutable artifact version. Identical observations replay the existing artifact. Retention is classification-aware, but automated deletion remains a production gap.
 
 ## Task attempts versus external actions
 
@@ -153,7 +120,7 @@ Retention is classification-aware, but automated deletion is not yet implemented
 
 `external_actions` records intended business side effects in another system.
 
-This distinction is essential because one task may execute several times while one GitHub comment must remain one logical action. A separate task can also target the same business action.
+This distinction is essential because one task may execute several times while one GitHub comment or Slack notification remains one logical business action. A separately submitted task may target the same action.
 
 ## Business-scoped action identity
 
@@ -168,184 +135,155 @@ deployment_context_sync:v1:
 github_comment
 ```
 
-This key is stable across:
+The Slack action key is additionally scoped to the verified workspace, channel, and authoritative GitHub revision:
 
-- worker retries;
-- process restarts;
-- replacement tasks that target the same business action.
+```text
+deployment_context_sync:v1:
+{deployment_scope_id}:
+slack_team:{expected_team_id}:
+{github_repository_id}:
+{github_issue_number}:
+{service_id}:
+github_revision:{revision}:
+slack_channel:{channel_id}:
+notification
+```
 
-Task ID and attempt ID remain provenance, not external side-effect identity.
+These identities remain stable across retries, process restarts, and replacement tasks. Task ID and attempt ID remain execution provenance.
 
-## Decision snapshot
+## Decision snapshots
 
-Before reserving a write, the workflow freezes a deterministic decision snapshot from:
+Before reserving a provider action, the workflow freezes a deterministic snapshot from the workflow version, policy version, decision, source identities and hashes, provider resource version, and action destination.
 
-- workflow version;
-- policy version;
-- normalized decision;
-- source provider, type, identity, version, and content hash;
-- GitHub head version;
-- Jira source version.
+Semantic source references are sorted before hashing. Retrieval order therefore does not create false evidence drift. Changed, added, or removed evidence changes the snapshot.
 
-Semantic source references are sorted before hashing. The same evidence set in a different retrieval order produces the same snapshot; changed, added, or removed evidence changes it.
-
-If evidence changes after action reservation, the workflow does not silently publish a conclusion based on a new evidence set. It requires an explicit action revision or human review.
+If evidence changes after action reservation, the workflow requires an explicit revision or human review rather than silently publishing a new conclusion under the old authority.
 
 ## External-action lifecycle
 
-A compact action lifecycle distinguishes known success, known failure, and uncertain provider outcome.
-
 ```text
 reserved -> reconciling -> ready_to_execute -> executing -> succeeded
-                       \-> retryable_failure -> reconciling
-                       \-> outcome_unknown -> reconciling
+                       \-> retryable_failure
+                       \-> outcome_unknown
                        \-> permanent_failure
                        \-> needs_human_review
 ```
 
-An append-only action-attempt table records each reservation, lookup, create, update, reconciliation, and state transition.
+Every transition:
 
-Every transition remains fenced by the current task lease and updates the action plus exact action-attempt evidence atomically.
+- verifies the current task fence;
+- locks the action where needed;
+- updates current action state and appends action-attempt evidence atomically;
+- uses PostgreSQL time for transition, completion, and not-before timestamps;
+- verifies expected row counts.
 
-## GitHub reconciliation
+## Authoritative GitHub reconciliation
 
 GitHub is the authoritative external write.
 
-A comment contains a stable hidden marker derived from the action scope:
+The comment contains a stable hidden marker derived from the business action scope. Reconciliation proceeds in this order:
 
-```html
-<!-- ninjatech:deployment-context-sync:v1:<stable-key-hash> -->
-```
+1. fetch the exact stored provider comment ID when known;
+2. verify repository, issue, configured author, and marker;
+3. otherwise scan bounded comment pages for the marker;
+4. bind one verified match;
+5. stop for human review on multiple matches, incomplete pagination, deletion, marker removal, or inconclusive provider state.
 
-Reconciliation order:
+An exact safe action-link sanitizer preserves a bounded `#issuecomment-...` anchor while removing credentials and query parameters. Source-artifact URL canonicalization remains stricter and removes fragments.
 
-1. Fetch the exact stored provider comment ID when known.
-2. Verify repository, issue, configured author identity, marker, and action scope.
-3. If no resource ID exists, scan bounded comment pages for the marker.
-4. One match binds or replays the action.
-5. Multiple matches require human review.
-6. Incomplete pagination prohibits another write.
-7. A known comment that was manually deleted or had its marker removed is not silently recreated.
+## Ambiguous GitHub write
 
-Unconfirmed action references expose a `null` provider resource ID. The implementation never fabricates a placeholder provider identifier.
+If GitHub may have accepted a write but the response cannot be trusted, the action becomes `outcome_unknown`. A replacement worker waits for the PostgreSQL-based reconciliation holdoff, then reconciles by provider ID or marker before considering another write.
 
-## Ambiguous write failure
+The simulator covers malformed successful responses and delayed acceptance across worker loss. These paths reconcile to one comment without claiming mathematical exactly-once behavior.
 
-The difficult case is:
+## Secondary Slack delivery
 
-1. GitHub accepts the comment.
-2. The response is lost, malformed, oversized, or otherwise cannot be trusted.
-3. The worker crashes or retries before persisting the provider ID.
-4. A replacement worker resumes the task.
+Slack runs only after confirmed authoritative GitHub success.
 
-The replacement must not blindly create another comment.
+The message is deterministic, bounded, and contains only the decision, canonical service ID, exact authoritative GitHub comment link, and GitHub action revision. It disables link and media unfurling and uses no message metadata.
 
-It uses:
+Delivery is ledger-first:
 
-- stable business action identity;
-- `write_started_at`;
-- `reconcile_not_before` based on PostgreSQL time;
-- provider-ID lookup when available;
-- bounded marker search;
-- a settlement delay for an in-flight provider action;
-- human review when the provider remains inconclusive.
+- existing `succeeded`, `outcome_unknown`, permanent-failure, and review states replay without contacting Slack;
+- unresolved `executing` state becomes fenced `outcome_unknown` rather than triggering another post;
+- only a new or eligible known-unsent action performs current Slack identity verification and a bounded `chat.postMessage` request.
 
-The simulator and container smoke test cover accepted-write-plus-malformed-response and delayed provider acceptance across worker loss. Both paths reconcile to one comment.
+Known-unsent failures may use a provider `Retry-After` or a small default not-before delay. Immediate replay performs no Slack call. After the database-authoritative delay expires, a later task may retry the same action.
 
-This reduces duplicate risk but does not claim mathematical exactly-once behavior across independent systems.
+An ambiguous Slack write is intentionally never resent automatically because Checkpoint 4B does not request Slack history access. It remains a degraded, manually reconciled notification state. GitHub truth remains valid.
 
-## Cancellation and external truth
+## Cancellation and ownership
 
-Customer cancellation cannot undo a comment that GitHub already confirmed.
+Customer cancellation cannot undo a provider effect already accepted.
 
-The implemented rule is:
+Implemented rules:
 
-- cancellation before a write prevents the write;
-- after a valid GitHub response, the external-action success is persisted first;
+- cancellation before a write prevents it;
+- after a confirmed provider response, external-action success is persisted first;
 - customer cancellation is then honored at the task level;
-- the task may become `cancelled` while the external-action ledger truthfully remains `succeeded`;
-- an ownership-lost worker cannot persist success, and a replacement owner must reconcile the existing provider action.
-
-This keeps business truth separate from local coroutine state.
+- an ownership-lost worker cannot persist success or mutate action history;
+- replacement owners reconcile GitHub and preserve Slack unknown outcomes without blind resend.
 
 ## HTTP safety
 
-Connectors use a shared bounded async HTTP client with:
+Connectors use a shared bounded async HTTP client with explicit timeouts, TLS verification, disabled implicit proxy trust, disabled redirects, configured base URLs only, bounded responses and pagination, content-type validation, and clean shutdown.
 
-- explicit connect, read, write, and pool timeouts;
-- TLS verification;
-- no implicit environment proxy trust;
-- redirects disabled by default;
-- configured base URLs only;
-- bounded response sizes, pages, and items;
-- content-type validation;
-- safe correlation headers;
-- clean shutdown.
+Reads and writes are classified differently. Reads can normally retry after transient failure. A write that may have been transmitted requires reconciliation or an explicit unknown-outcome state.
 
-Reads and writes are classified differently:
+## Metrics
 
-| Condition | Read | Write |
-|---|---|---|
-| Connect failure proven before transmission | Retryable | Retryable |
-| Read timeout after transmission | Retryable | Outcome unknown |
-| 401/403 | Permanent authority error | Permanent authority error |
-| 404 | Provider-specific permanent result | Permanent unless contract says otherwise |
-| 429 | Bounded retry | Provider-specific proof required before ordinary retry |
-| Ambiguous 5xx | Retryable | Reconcile before reissue |
-| Malformed or oversized 2xx | Contract failure | Outcome unknown |
+Metrics are typed, process-local, and emitted through allowlisted structured records. Allowed labels are low-cardinality enums such as provider, operation, outcome class, policy decision, action status, and Slack delivery state.
 
-A read-only reconciliation failure is retryable; it is not classified as `outcome_unknown` because no new write may have occurred.
+Task IDs, repositories, services, issue numbers, channels, URLs, provider IDs, and error messages are prohibited as metric labels. Counters reset after process restart; no production metrics backend or public metrics endpoint exists yet.
 
-## Credential strategy
+## Customer deployment package
 
-Sandbox credentials come only from dedicated environment variables or mounted secret files.
+The repository includes a fictional Northstar Payments package covering:
 
-Each connector owns access to its credential provider. Secrets never enter task input, source artifacts, logs, API responses, or database error output.
+- discovery notes;
+- workflow contract;
+- integration and data map;
+- security and permissions;
+- acceptance criteria;
+- rollout and rollback plan.
 
-The production upgrade path is:
-
-- GitHub App installation tokens;
-- Jira OAuth 2.0;
-- customer-managed secret storage;
-- tenant-scoped credentials and action keys.
-
-## Checkpoint 4B boundary
-
-Slack has not been implemented in 4A.
-
-Checkpoint 4B will add Slack only as a secondary, non-authoritative action after confirmed GitHub success. Ambiguous notification delivery will not erase the authoritative GitHub outcome and will not be blindly resent.
+The security document explicitly lists authentication, SSO/SCIM, tenant isolation, production data residency, managed secrets, automated retention deletion, and compliance certification as not implemented.
 
 ## Verification
 
-The final Checkpoint 4A head passed:
+The final Milestone 4B head passed:
 
 - Ruff formatting and linting;
 - strict mypy;
 - Alembic upgrade, downgrade, and re-upgrade through migration `0004_enterprise_integrations`;
-- 209 PostgreSQL-backed tests with zero skips;
+- 274 PostgreSQL-backed tests, with opt-in real-provider sandbox tests excluded;
 - non-root container validation;
-- API, PostgreSQL, provider simulator, and worker startup;
-- successful authoritative workflow;
-- independent-task replay without duplicate action;
-- ambiguous-write reconciliation;
-- blocked policy with zero downstream access;
-- delayed provider acceptance across worker restart;
-- cancellation after confirmed provider success;
-- ownership-loss reconciliation;
-- liveness/readiness degradation during database outage;
-- guaranteed container and volume cleanup.
+- GitHub and Slack success;
+- independent-task replay without duplicate actions;
+- GitHub ambiguous-write reconciliation;
+- Slack unknown-outcome no-resend;
+- permanent Slack degradation without loss of GitHub truth;
+- policy-blocked zero provider access;
+- credential-rotation identity checks;
+- workspace-scoped action identity;
+- Retry-After not-before handling;
+- exact GitHub comment links;
+- cancellation and ownership-loss races;
+- database-outage readiness degradation;
+- guaranteed cleanup.
 
 ## FDE relevance
 
 This milestone demonstrates the work behind a real enterprise deployment:
 
-- discovering the actual workflow;
-- identifying systems of record;
-- normalizing messy data;
-- translating business policy into authority boundaries;
-- verifying customer and provider identities;
-- handling provider rate limits and failures;
-- protecting credentials;
-- preventing and reconciling duplicate side effects;
-- defining customer-visible acceptance and rollback criteria;
-- documenting what remains uncertain.
+- discover the actual workflow and systems of record;
+- normalize messy customer data;
+- translate policy into permissions and stopping conditions;
+- verify provider and resource identities;
+- protect credentials;
+- distinguish authoritative from secondary outcomes;
+- handle rate limits, ambiguity, retries, cancellation, and ownership loss;
+- prevent duplicate business effects;
+- define customer-visible acceptance, security, rollout, and rollback criteria;
+- state limitations honestly.

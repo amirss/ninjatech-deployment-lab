@@ -22,6 +22,10 @@ The project is built incrementally around a realistic Forward Deployed Engineer 
 - Policy-first enterprise integration
 - Business-scoped external-action identity
 - Safe reconciliation after ambiguous provider writes
+- Workspace-bound Slack identity and channel authorization
+- Ledger-first replay with no blind resend after unknown delivery
+- Low-cardinality operational metrics
+- Customer discovery, security, acceptance, and rollout artifacts
 
 ## Current status
 
@@ -30,16 +34,20 @@ Completed:
 1. Production service foundation
 2. Persistent idempotent task state machine
 3. Reliable worker execution
-4. Milestone 4A — authoritative enterprise integration path
+4. Enterprise integrations and safe external actions
+   - 4A: authoritative GitHub path
+   - 4B: secondary Slack delivery, metrics, and customer package
 
-Milestone 4A adds a deterministic `deployment_context_sync` workflow across a customer service catalog, GitHub, and Jira. It normalizes messy provider data, checks policy before unnecessary access, preserves minimized source evidence, and creates or reconciles one bounded GitHub comment without blindly repeating an uncertain write.
+Milestone 4 now provides a deterministic `deployment_context_sync` workflow across a customer service catalog, GitHub, Jira, and Slack. It checks policy before unnecessary access, normalizes messy provider data, preserves minimized evidence, creates or reconciles one authoritative GitHub comment, and treats Slack as a secondary notification whose failure never erases GitHub truth.
 
 Next:
 
-- Milestone 4B — secondary Slack delivery, operational metrics, and customer-facing deployment artifacts
-- Milestone 5 — a reasoning model operating through the already bounded and verifiable tool layer
+- Milestone 5A — bounded reasoning and a source-linked code-change proposal
+- Milestone 5B — isolated patch validation and explicit human approval
+- Milestone 5C — safe branch and pull-request delivery through the external-action ledger
+- Milestone 6 — broader evaluations, adversarial cases, and acceptance evidence
 
-The project deliberately builds reliability before introducing an LLM. A later reasoning agent will operate on top of a durable, observable, and permission-bounded execution system rather than replacing one.
+The project deliberately built reliability before introducing an LLM. The model will operate through typed, read-only tools and bounded contracts; it will not own state, credentials, permissions, or external-side-effect truth.
 
 ## Core design principle
 
