@@ -577,6 +577,10 @@ def _normalize_service_record(payload: Mapping[str, JsonValue]) -> ServiceCatalo
                 ),
                 "required_reviewer": _optional_string(first("required_reviewer", "reviewer")),
                 "allow_automatic_updates": bool(first("allow_automatic_updates") or False),
+                "model_processing_policy": first(
+                    "model_processing_policy",
+                    "modelProcessingPolicy",
+                ),
                 "source_version": _string_value(first("source_version", "etag", "version")),
                 "source_url": canonical_source_url(_string_value(first("source_url", "url"))),
             }

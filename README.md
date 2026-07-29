@@ -4,11 +4,14 @@ NinjaTech Deployment Lab is an incremental, production-oriented deployment engin
 project. Milestone 4 adds one disabled-by-default, deterministic
 `deployment_context_sync` workflow to the persistent task and reliable-worker foundation.
 Checkpoint 4B keeps GitHub authoritative while adding optional secondary Slack delivery,
-process-local operational metrics, and a fictional customer deployment package.
+process-local operational metrics, and a fictional customer deployment package. Milestone
+5A1 adds only the disabled, reusable persistence and validation foundation for a future
+read-only code-change proposal workflow.
 
-PostgreSQL remains the only queue and coordination system. There is no LLM, agent
-framework, authentication, frontend, Redis, Celery, Kafka, SQS, Kubernetes, Terraform, or
-AWS infrastructure.
+PostgreSQL remains the only queue and coordination system. No proposal handler is
+registered, no live model provider or external source egress exists, and no patch can be
+applied or executed. There is no agent framework, authentication, frontend, Redis, Celery,
+Kafka, SQS, Kubernetes, Terraform, or AWS infrastructure.
 
 ## Architecture
 
@@ -38,6 +41,44 @@ The application is one stateless ASGI service:
 - After that GitHub action is confirmed, an explicitly requested and allowlisted Slack
   notification uses a separate business action and records degraded delivery without
   changing the authoritative result.
+- Disabled code-proposal foundation types enforce deterministic evidence handles, prompt
+  contract hashing, bounded read-only model actions, source-linked proposal validation,
+  and fenced `agent_runs`/`agent_steps` evidence. Nothing invokes these types from the
+  worker in 5A1.
+
+## Milestone 5A1 proposal foundation
+
+Milestone 5A1 is infrastructure, not a feature endpoint. `code_change_proposal` is not a
+registered worker task type; `RecordedModelProvider` is a deterministic offline test
+double, and no OpenAI client exists. Settings reserve a future real-provider boundary but
+reject it in ordinary tests, CI, staging, and production. No source is sent outside the
+process.
+
+The foundation provides:
+
+- deterministic `EvidenceHandle` values derived from semantic source identity rather than
+  task or database UUIDs, with relational links back to persisted source artifacts;
+- a prompt contract hash covering fixed policy, action/proposal schemas, tool contracts,
+  evidence format, reason codes, rendering rules, and code-enforced budgets;
+- exactly five typed response actions: bounded path search, bounded file read, finish,
+  request human review, or refuse;
+- a high-confidence content scanner that fails closed on common credential forms before
+  model egress (it is a bounded safeguard, not a complete DLP system);
+- manifest collision/path controls and a deterministic unified-diff validator that
+  prohibits dependencies, lockfiles, migrations, containers, CI, infrastructure, secrets,
+  deletes, renames, binaries, symlinks, and submodules;
+- migration `0005`, which adds semantic agent runs, append-only structured step evidence,
+  and FK-backed step-to-source links. It stores no prompt, source text, raw provider
+  response, hidden reasoning, or unvalidated diff.
+
+Prompt injection is not eliminated. Its future impact is bounded by fixed policy, typed
+read-only tools, hard context/step limits, path and content checks, ownership fencing, and
+deterministic output validation. A structured proposal is still only an unapproved
+candidate. Milestone 5B is required before any patch execution, and Milestone 5C before
+branch or pull-request delivery.
+
+Automated retention deletion, inbound authentication, and tenancy remain absent and are
+prerequisites for production use.
 
 ## Prerequisites
 

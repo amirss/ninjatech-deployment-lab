@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ninjatech_deployment_lab.code_proposals.context import ContextBudgets
+from ninjatech_deployment_lab.code_proposals.domain import ModelProviderName
 
 SlackChannelId = Annotated[str, StringConstraints(pattern=r"^[CG][A-Z0-9]{8,30}$")]
 
@@ -77,6 +88,40 @@ class Settings(BaseSettings):
     integration_max_items: int = Field(default=200, ge=1, le=1000)
     integration_max_retry_after_seconds: float = Field(default=60.0, ge=0, le=3600)
     source_artifact_max_bytes: int = Field(default=262144, ge=1024, le=16777216)
+    enable_code_change_proposal: bool = False
+    enable_model_data_egress: bool = False
+    run_model_sandbox: bool = False
+    model_provider: ModelProviderName = ModelProviderName.RECORDED
+    model_name: str | None = Field(default=None, min_length=1, max_length=255)
+    model_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: SecretStr | None = None
+    openai_api_key_file: Path | None = None
+    model_prompt_template_version: str = Field(
+        default="code-change-proposal-v1",
+        pattern=r"^[a-z0-9][a-z0-9._-]{0,99}$",
+    )
+    recorded_model_fixture_set: str = Field(
+        default="ci-v1",
+        pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$",
+    )
+    model_minimum_policy_version: int = Field(default=1, ge=1)
+    model_maximum_manifest_entries: int = Field(default=2000, ge=1, le=10000)
+    model_maximum_manifest_bytes: int = Field(default=262144, ge=1024, le=4194304)
+    model_maximum_steps: int = Field(default=8, ge=1, le=50)
+    model_maximum_calls: int = Field(default=8, ge=1, le=50)
+    model_maximum_repository_tool_calls: int = Field(default=6, ge=1, le=50)
+    model_maximum_files_per_read: int = Field(default=5, ge=1, le=20)
+    model_maximum_distinct_files: int = Field(default=16, ge=1, le=100)
+    model_maximum_bytes_per_file: int = Field(default=65536, ge=1, le=1048576)
+    model_maximum_total_source_bytes: int = Field(default=393216, ge=1024, le=8388608)
+    model_maximum_issue_description_bytes: int = Field(default=32768, ge=1, le=1048576)
+    model_maximum_prompt_bytes: int = Field(default=524288, ge=1024, le=8388608)
+    model_maximum_output_tokens: int = Field(default=8192, ge=1, le=65536)
+    model_maximum_output_bytes: int = Field(default=262144, ge=1024, le=1048576)
+    model_maximum_proposal_bytes: int = Field(default=131072, ge=1024, le=1048576)
+    model_maximum_changed_files: int = Field(default=8, ge=1, le=50)
+    model_maximum_diff_bytes: int = Field(default=65536, ge=1, le=1048576)
+    ci: bool = Field(default=False, validation_alias=AliasChoices("CI", "NINJATECH_CI"))
 
     @field_validator("database_url")
     @classmethod
@@ -165,11 +210,47 @@ class Settings(BaseSettings):
             if self.slack_write_timeout_seconds >= self.worker_lease_duration_seconds:
                 msg = "Slack write timeout must be shorter than the worker lease"
                 raise ValueError(msg)
+        if self.enable_code_change_proposal:
+            if self.environment in {"staging", "production"}:
+                msg = (
+                    "code_change_proposal cannot be enabled in staging or production "
+                    "without authentication, tenancy, and production data controls"
+                )
+                raise ValueError(msg)
+            if self.model_provider is ModelProviderName.OPENAI:
+                if self.environment not in {"development", "demo", "sandbox"}:
+                    raise ValueError("OpenAI model provider is forbidden in ordinary test")
+                if self.ci or os.getenv("CI", "").casefold() == "true":
+                    raise ValueError("OpenAI model provider is forbidden when CI=true")
+                if not self.enable_model_data_egress or not self.run_model_sandbox:
+                    raise ValueError(
+                        "OpenAI model provider requires explicit egress and sandbox flags"
+                    )
+                if self.model_name is None or not self.model_name.strip():
+                    raise ValueError("model_name is required for OpenAI provider")
+                if self.openai_api_key is None and self.openai_api_key_file is None:
+                    raise ValueError("OpenAI provider requires one credential source")
+                if (
+                    self.openai_api_key_file is not None
+                    and not self.openai_api_key_file.is_absolute()
+                ):
+                    raise ValueError("OpenAI API-key file path must be absolute")
+                parsed_model_url = urlsplit(self.model_base_url)
+                if (
+                    parsed_model_url.scheme != "https"
+                    or parsed_model_url.hostname != "api.openai.com"
+                    or parsed_model_url.username is not None
+                    or parsed_model_url.password is not None
+                    or parsed_model_url.query
+                    or parsed_model_url.fragment
+                ):
+                    raise ValueError("OpenAI base URL must use the official HTTPS host")
         for inline_secret, secret_file, name in (
             (self.service_catalog_token, self.service_catalog_token_file, "service catalog"),
             (self.jira_api_token, self.jira_api_token_file, "Jira"),
             (self.github_token, self.github_token_file, "GitHub"),
             (self.slack_bot_token, self.slack_bot_token_file, "Slack"),
+            (self.openai_api_key, self.openai_api_key_file, "OpenAI"),
         ):
             if inline_secret is not None and secret_file is not None:
                 msg = f"{name} credential must use either an environment value or a file"
@@ -187,6 +268,27 @@ class Settings(BaseSettings):
         if self.environment in {"staging", "production"} and parsed.scheme != "https":
             msg = "staging and production integration base URLs must use HTTPS"
             raise ValueError(msg)
+
+    def code_proposal_budgets(self) -> ContextBudgets:
+        """Return the code-enforced application ceiling for future proposal runs."""
+        return ContextBudgets(
+            maximum_manifest_entries=self.model_maximum_manifest_entries,
+            maximum_manifest_bytes=self.model_maximum_manifest_bytes,
+            maximum_model_steps=self.model_maximum_steps,
+            maximum_model_calls=self.model_maximum_calls,
+            maximum_repository_tool_calls=self.model_maximum_repository_tool_calls,
+            maximum_files_per_read=self.model_maximum_files_per_read,
+            maximum_distinct_files=self.model_maximum_distinct_files,
+            maximum_bytes_per_file=self.model_maximum_bytes_per_file,
+            maximum_total_source_bytes=self.model_maximum_total_source_bytes,
+            maximum_issue_description_bytes=self.model_maximum_issue_description_bytes,
+            maximum_prompt_bytes=self.model_maximum_prompt_bytes,
+            maximum_output_tokens=self.model_maximum_output_tokens,
+            maximum_output_bytes=self.model_maximum_output_bytes,
+            maximum_proposal_bytes=self.model_maximum_proposal_bytes,
+            maximum_changed_files=self.model_maximum_changed_files,
+            maximum_diff_bytes=self.model_maximum_diff_bytes,
+        )
 
 
 @lru_cache

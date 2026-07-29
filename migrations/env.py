@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from ninjatech_deployment_lab.code_proposals.model import AgentRun
 from ninjatech_deployment_lab.config import get_settings
 from ninjatech_deployment_lab.integrations.model import ExternalAction
 from ninjatech_deployment_lab.tasks.model import Task
@@ -20,6 +21,7 @@ settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Task.metadata
 assert ExternalAction.metadata is target_metadata
+assert AgentRun.metadata is target_metadata
 
 
 def run_migrations_offline() -> None:

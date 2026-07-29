@@ -1,0 +1,17 @@
+{
+  "name": "refuse-v1",
+  "model_name": "recorded-contract-v1",
+  "exchanges": [
+    {
+      "expected_request_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "response": {
+        "action": "refuse",
+        "reason_code": "out_of_scope_request",
+        "reason": "The synthetic request is outside the bounded proposal contract.",
+        "citations": []
+      },
+      "input_tokens": 0,
+      "output_tokens": 0
+    }
+  ]
+}
