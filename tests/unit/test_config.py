@@ -142,7 +142,11 @@ def test_openai_provider_is_forbidden_in_test_and_ci() -> None:
         "https://api.openai.com/v1?query=unsafe",
     ],
 )
-def test_future_openai_provider_accepts_only_official_https_host(base_url: str) -> None:
+def test_future_openai_provider_accepts_only_official_https_host(
+    base_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CI", raising=False)
     with pytest.raises(ValidationError, match="official HTTPS"):
         Settings(
             database_url="postgresql+asyncpg://user:pass@localhost/database",
