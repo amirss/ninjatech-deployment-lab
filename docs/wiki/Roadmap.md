@@ -1,6 +1,6 @@
 # Roadmap
 
-The project grows through explicit milestones. Each milestone adds one new class of production responsibility and keeps the previous guarantees intact.
+The project grows through explicit milestones. Each milestone adds one new class of production responsibility while preserving the guarantees established earlier.
 
 ## Milestone 1 — Production service foundation
 
@@ -69,11 +69,9 @@ Core lesson:
 
 ## Milestone 4 — Enterprise integrations and safe external actions
 
-**Status:** Checkpoint 4A complete; Checkpoint 4B next
-
-### 4A — Authoritative path
-
 **Status:** Complete
+
+### 4A — Authoritative GitHub path
 
 Built:
 
@@ -87,63 +85,106 @@ Built:
 - deterministic, order-independent decision snapshots;
 - append-only external-action transition history;
 - exact-comment-ID-first GitHub reconciliation;
-- stable hidden marker search when no provider ID is known;
+- stable hidden-marker search when no provider ID is known;
 - explicit `outcome_unknown` handling for ambiguous writes;
-- reconciliation settlement holdoff for in-flight provider actions;
+- reconciliation holdoff for in-flight provider actions;
 - blocked and human-review outcomes that perform no unauthorized write;
 - customer-cancellation and ownership-loss handling after a provider action;
-- development/test-only provider simulator;
-- complete migration, PostgreSQL, and container smoke validation.
+- development/test-only provider simulator.
 
-Verified on the final 4A head:
+### 4B — Secondary Slack delivery and customer package
+
+Built:
+
+- Slack notification only after confirmed authoritative GitHub success;
+- trusted workspace, bot-user, optional bot, and channel authorization;
+- credential-bound identity caching that invalidates after token or principal change;
+- workspace-scoped Slack business-action identity;
+- ledger-first replay before Slack network access;
+- no blind resend after `outcome_unknown`;
+- database-authoritative Retry-After and not-before handling for known-unsent failures;
+- exact GitHub comment-anchor links in Slack messages;
+- low-cardinality process-local/log-oriented metrics;
+- fictional Northstar Payments discovery, workflow, data, security, acceptance, and rollout documents;
+- optional real-provider sandbox tests excluded from ordinary CI.
+
+Verified on the final Milestone 4B head:
 
 - Ruff formatting and linting;
 - strict mypy;
-- Alembic upgrade, downgrade, and re-upgrade;
-- 209 PostgreSQL-backed tests with zero skips;
+- Alembic upgrade, downgrade, and re-upgrade through `0004_enterprise_integrations`;
+- 274 PostgreSQL-backed tests, with optional sandbox tests excluded;
 - non-root container runtime;
-- successful workflow, independent-task replay, ambiguous-write reconciliation, policy-blocked zero-access behavior, delayed provider acceptance, cancellation, ownership-loss recovery, and database-outage readiness.
+- GitHub and Slack success;
+- independent-task replay without duplicate provider actions;
+- ambiguous GitHub reconciliation;
+- Slack unknown-outcome no-resend;
+- permanent Slack degradation without loss of GitHub truth;
+- policy-blocked zero-access behavior;
+- cancellation and ownership-loss races;
+- database-outage liveness/readiness behavior;
+- guaranteed container cleanup.
 
 Core lesson:
 
-> Once a worker changes another system, task retries are not enough. External actions need stable business identity, explicit uncertainty, and reconciliation.
+> Once a worker changes another system, task retries are not enough. External actions need stable business identity, explicit uncertainty, and reconciliation. Secondary delivery must never corrupt authoritative truth.
 
-### 4B — Secondary delivery
+## Milestone 5 — Bounded agentic code-change workflow
 
-**Status:** Planned next
+**Status:** Next
 
-Expected scope:
+Milestone 5 introduces a reasoning model only after state, authority, external-action identity, and failure semantics are established.
 
-- Slack notification as a secondary, non-authoritative external action;
-- no-blind-resend behavior for ambiguous notification delivery;
-- low-cardinality operational metrics;
-- concise customer discovery, workflow, security, acceptance, and rollout artifacts;
-- final Compose smoke scenarios;
-- optional real-provider sandbox tests, disabled in ordinary CI;
-- explicit retention and deletion gap documentation.
-
-The authoritative GitHub outcome must remain valid even when Slack is unavailable or ambiguous.
-
-## Milestone 5 — Agentic workflow
-
-**Status:** Planned
+### 5A — Reasoning and source-linked change proposal
 
 Expected scope:
 
-- reasoning-model integration;
-- typed tool contracts;
-- bounded planning;
-- repository investigation;
-- explicit evidence collection;
-- human approval and escalation;
+- provider-neutral model protocol;
+- one optional real model provider and one deterministic recorded provider;
+- hermetic CI with no model network access or secret requirement;
+- policy-authorized, read-only repository context;
+- bounded tool loop for file search and file reads;
+- strict structured proposal output;
+- source citations and evidence hashes;
+- prompt-injection boundaries;
+- persistent agent-run and agent-step evidence;
+- no repository modification, command execution, branch push, or pull request.
+
+Core lesson:
+
+> A model may inspect and propose, but the system owns tools, budgets, permissions, evidence, and stopping conditions.
+
+### 5B — Isolated patch validation and human review
+
+Expected scope:
+
+- disposable isolated workspace;
+- exact base-commit binding;
+- safe unified-diff parsing and application;
+- path, file-count, binary, dependency, and size guardrails;
+- trusted per-repository test profile;
+- bounded test execution without customer credentials or unrestricted network;
+- candidate-change artifact and validation evidence;
+- explicit human approval before external publication.
+
+Core lesson:
+
+> Generated code is only a proposal until deterministic controls prove what changed and whether the approved tests passed.
+
+### 5C — Branch and pull-request delivery
+
+Expected scope:
+
+- stable business identity for branch/commit and pull-request actions;
+- reconciliation after ambiguous push or PR creation;
+- provider-resource-ID-first adoption;
 - no merge or production-deployment authority;
-- model-independent control plane.
-
-The model will operate only through tools whose permissions, idempotency, and failure semantics were established earlier.
+- cancellation and ownership-loss correctness;
+- external-action evidence for each provider side effect.
 
 Core lesson:
 
-> A model proposes and reasons; the system owns authority, state, and verification.
+> A validated patch and a published pull request are different business effects and require separate authority and reconciliation.
 
 ## Milestone 6 — Evaluations and guardrails
 
@@ -160,8 +201,10 @@ Expected scope:
 - tool and provider failures;
 - false-success detection;
 - repeated-run consistency;
+- refusal quality;
 - human-review measurements;
-- cost, latency, and adoption metrics.
+- cost, latency, and adoption metrics;
+- regression scorecard in CI.
 
 Core lesson:
 
@@ -199,7 +242,7 @@ Expected scope:
 - approvals and cancellation;
 - attempts and failure evidence;
 - external-action status;
-- source references;
+- source and agent evidence;
 - usage and outcome metrics.
 
 This is intentionally an operator surface, not a polished general-purpose product.
